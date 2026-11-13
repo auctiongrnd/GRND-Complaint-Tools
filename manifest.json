@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "GRND Complaint Tools",
+  "version": "1.3.0",
+  "description": "Complaint templates, local report history, announcements, and release updates for GRND admins",
+
+  "content_scripts": [
+    {
+      "matches": [
+        "https://grnd.gg/admin/complaints/*",
+        "https://eu.grnd.gg/admin/complaints/*"
+      ],
+      "js": ["config.js", "content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+
+  "permissions": ["clipboardWrite"],
+
+  "host_permissions": [
+    "https://grnd.gg/*",
+    "https://eu.grnd.gg/*",
+    "https://yusrqoiiqvvgtcbanwjc.supabase.co/*"
+  ]
+}
