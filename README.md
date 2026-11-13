@@ -42,12 +42,13 @@ Custom templates, the admin name, and report history are stored in the browser's
 The portal is a static site in `admin-portal/`; its database schema and row-level security policies are in `supabase/schema.sql`. The extension uses the Supabase project and publishable key in the root `config.js`. A publishable key is expected to be visible to users; never put a Supabase `service_role` key in the portal or extension. Keep the supplied row-level security policies enabled.
 
 1. In Supabase, open **SQL Editor** and run `supabase/schema.sql`.
-2. In **Authentication** settings, enable email/password sign-in and set the site's allowed redirect URL(s) to the origin where you will host the portal.
-3. Host `admin-portal/` and the root `config.js` together on a static HTTPS host. The portal loads the Supabase JavaScript client from jsDelivr; staff browsers need internet access to that CDN and your Supabase project.
-4. Open the hosted portal, create your account, and confirm the email if required by your Supabase Auth settings.
-5. In Supabase **Authentication > Users**, copy your account UUID. In **SQL Editor**, copy the commented owner bootstrap `INSERT` at the bottom of `supabase/schema.sql`, remove the comment markers, replace the example UUID and email with yours, and run it.
-6. Reload the portal and sign in. New staff can create accounts and request access; the owner approves or rejects requests in **Staff access requests**. Staff can publish announcements and version releases; only the owner can approve access requests and remove staff.
-7. Publish an announcement with a title and message. To publish a version, upload a ZIP containing the extension files and provide the version number, release title, and release notes.
+2. In **Authentication** settings, enable email/password sign-in and add the portal URL to the allowed redirect URLs. For GitHub Pages, use `https://auctiongrnd.github.io/GRND-Complaint-Tools/admin-portal/`. Email confirmation is enabled for new accounts, so configure SMTP in Supabase if confirmation messages are not delivered.
+3. In the GitHub repository, open **Settings > Pages** and set the source to **GitHub Actions**. The workflow deploys the repository on each push to `main`.
+4. The portal and root `config.js` are deployed together. Open `https://auctiongrnd.github.io/GRND-Complaint-Tools/admin-portal/`. The portal loads the Supabase JavaScript client from jsDelivr; staff browsers need internet access to that CDN and your Supabase project.
+5. Choose **Create account**, enter a valid email and a password with at least 8 characters, then click **Create account** again to submit. Open the confirmation link sent by Supabase, return to the portal, and sign in before requesting staff access.
+6. In Supabase **Authentication > Users**, copy your account UUID. In **SQL Editor**, copy the commented owner bootstrap `INSERT` at the bottom of `supabase/schema.sql`, remove the comment markers, replace the example UUID and email with yours, and run it.
+7. Reload the portal and sign in. New staff can create accounts and request access; the owner approves or rejects requests in **Staff access requests**. Staff can publish announcements and version releases; only the owner can approve access requests and remove staff.
+8. Publish an announcement with a title and message. To publish a version, upload a ZIP containing the extension files and provide the version number, release title, and release notes.
 
 The portal's release files are public downloads so extension users can retrieve them; only approved staff can upload/delete files or publish records. Announcements and release metadata are readable by extension users without portal sign-in. Test the SQL policies and portal with a non-staff account before sharing widely.
 
