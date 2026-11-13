@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>GRND Extension Admin</title>
+    <link rel="stylesheet" href="portal.css">
+</head>
+<body>
+    <main class="page">
+        <header class="page-header">
+            <div>
+                <p class="eyebrow">GRND COMPLAINT TOOLS</p>
+                <h1>Extension Admin</h1>
+                <p>Publish announcements and extension releases for your admins.</p>
+            </div>
+            <button id="sign-out" class="button secondary" type="button" hidden>Sign out</button>
+        </header>
+
+        <div id="status" class="status" role="status" aria-live="polite"></div>
+
+        <section id="auth-view" class="card">
+            <h2>Staff sign in</h2>
+            <form id="auth-form">
+                <label>Email <input id="auth-email" type="email" autocomplete="email" required></label>
+                <label>Password <input id="auth-password" type="password" autocomplete="current-password" minlength="8" required></label>
+                <div class="button-row">
+                    <button class="button" type="submit">Sign in</button>
+                    <button id="sign-up" class="button secondary" type="button">Create account</button>
+                </div>
+            </form>
+            <p class="hint">Only approved staff can publish. New accounts must be approved by the owner.</p>
+        </section>
+
+        <section id="request-view" class="card" hidden>
+            <h2>Staff access</h2>
+            <p id="request-message">Your account is not approved to manage the extension.</p>
+            <button id="request-access" class="button" type="button">Request staff access</button>
+        </section>
+
+        <section id="portal-view" hidden>
+            <div class="card">
+                <h2 id="welcome"></h2>
+                <p>Published announcements appear in the extension. Releases are listed by version and can be downloaded by admins.</p>
+            </div>
+
+            <section id="requests-card" class="card" hidden>
+                <h2>Staff access requests</h2>
+                <div id="requests-list" class="item-list"></div>
+            </section>
+
+            <div class="two-column">
+                <section class="card">
+                    <h2>Send an announcement</h2>
+                    <form id="announcement-form">
+                        <label>Title <input id="announcement-title" maxlength="120" required></label>
+                        <label>Message <textarea id="announcement-message" rows="5" maxlength="3000" required></textarea></label>
+                        <button class="button" type="submit">Publish announcement</button>
+                    </form>
+                </section>
+
+                <section class="card">
+                    <h2>Publish an extension release</h2>
+                    <form id="release-form">
+                        <label>Version <input id="release-version" placeholder="1.3.0" maxlength="32" required></label>
+                        <label>Release title <input id="release-title" maxlength="120" required></label>
+                        <label>What's new <textarea id="release-notes" rows="5" maxlength="5000" required></textarea></label>
+                        <label>Extension ZIP <input id="release-package" type="file" accept=".zip,application/zip" required></label>
+                        <p class="hint">Upload a ZIP containing the extension files. Users download a version and install it manually.</p>
+                        <button class="button" type="submit">Upload and publish release</button>
+                    </form>
+                </section>
+            </div>
+
+            <section class="card">
+                <h2>Published announcements</h2>
+                <div id="announcements-list" class="item-list"></div>
+            </section>
+            <section class="card">
+                <h2>Release history</h2>
+                <div id="releases-list" class="item-list"></div>
+            </section>
+            <section id="staff-card" class="card" hidden>
+                <h2>Approved staff</h2>
+                <div id="staff-list" class="item-list"></div>
+            </section>
+        </section>
+    </main>
+
+    <script src="../config.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.119.0/dist/umd/supabase.js"></script>
+    <script src="portal.js"></script>
+</body>
+</html>
