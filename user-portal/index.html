@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#070d18">
+    <title>GRND User Portal</title>
+    <link rel="stylesheet" href="../admin-portal/portal.css">
+</head>
+<body>
+    <main class="page user-page">
+        <header class="page-header user-header">
+            <div>
+                <a class="back-link" href="../">GRND ADMIN HUB</a>
+                <h1>Community portal</h1>
+                <p>Announcements, extension downloads, and a direct line to the team.</p>
+            </div>
+            <nav class="button-row" aria-label="Portal navigation">
+                <a class="button secondary" href="../">Home</a>
+                <a class="button secondary" href="../admin-portal/">Staff workspace</a>
+                <button id="sign-out" class="button secondary" type="button" hidden>Sign out</button>
+            </nav>
+        </header>
+
+        <div id="status" class="status" role="status" aria-live="polite"></div>
+
+        <section id="auth-view" class="card user-auth-card">
+            <div>
+                <p class="eyebrow">YOUR GRND EXTENSION ACCOUNT</p>
+                <h2 id="auth-heading">Welcome back</h2>
+                <p id="auth-description">Sign in to send feedback and follow your requests, or create an account to get started.</p>
+            </div>
+            <form id="auth-form">
+                <label>Email <input id="auth-email" type="email" autocomplete="email" required></label>
+                <label>Password <input id="auth-password" type="password" autocomplete="current-password" minlength="8" required></label>
+                <div class="button-row">
+                    <button id="auth-submit" class="button" type="submit">Sign in</button>
+                    <button id="auth-mode-toggle" class="button secondary" type="button">Create account</button>
+                </div>
+            </form>
+            <button id="password-reset" class="text-button" type="button">Forgot your password?</button>
+            <p id="auth-hint" class="hint">New accounts must confirm their email. Feedback is available after you sign in.</p>
+        </section>
+
+        <section id="user-dashboard" hidden>
+            <div class="card user-welcome">
+                <div>
+                    <p class="eyebrow">YOUR ACCOUNT</p>
+                    <h2 id="welcome"></h2>
+                    <p>Explore updates, share ideas, and keep track of your feedback.</p>
+                </div>
+                <nav class="tab-nav" aria-label="User portal sections">
+                    <button class="tab-button active" type="button" data-tab="overview" aria-selected="true">Overview</button>
+                    <button class="tab-button" type="button" data-tab="feedback" aria-selected="false">Feedback</button>
+                    <button class="tab-button" type="button" data-tab="account" aria-selected="false">Account</button>
+                </nav>
+            </div>
+
+            <section id="tab-overview" class="user-tab-panel">
+                <div class="card">
+                    <h2>Your portal</h2>
+                    <p>Published announcements and downloads are open to everyone. Sign in is only needed for feedback and account tools.</p>
+                    <div class="button-row">
+                        <button class="button" type="button" data-open-tab="feedback">Send feedback</button>
+                        <button class="button secondary" type="button" data-open-tab="account">Manage account</button>
+                    </div>
+                </div>
+            </section>
+
+            <section id="tab-feedback" class="user-tab-panel" hidden>
+                <div class="two-column">
+                    <section class="card">
+                        <h2>Send feedback</h2>
+                        <p class="hint">Your account email is shared with staff so they can follow up. Do not send complaint contents, passwords, or other sensitive information.</p>
+                        <form id="feedback-form">
+                            <label>What is this about?
+                                <select id="feedback-category" required>
+                                    <option value="feature">Feature request</option>
+                                    <option value="bug">Report a problem</option>
+                                    <option value="other">Other feedback</option>
+                                </select>
+                            </label>
+                            <label>Short title <input id="feedback-title" maxlength="120" required></label>
+                            <label>Details <textarea id="feedback-message" rows="6" maxlength="4000" required></textarea></label>
+                            <label id="public-board-option" class="checkbox-label" hidden>
+                                <span><input id="feedback-public-board" type="checkbox"> Share this idea on the public feature board</span>
+                                <small>Only the title, status, and vote count are public. Your email and details stay private. This choice cannot be changed after submission.</small>
+                            </label>
+                            <button class="button" type="submit">Send to the team</button>
+                        </form>
+                    </section>
+                    <section class="card">
+                        <h2>My submissions</h2>
+                        <p class="hint">Track the status of feedback sent from this account.</p>
+                        <div id="my-feedback-list" class="item-list"></div>
+                    </section>
+                </div>
+            </section>
+
+            <section id="tab-account" class="user-tab-panel" hidden>
+                <div class="two-column">
+                    <section class="card">
+                        <h2>Account details</h2>
+                        <p id="account-email" class="account-email"></p>
+                        <p class="hint">Your account is separate from staff publishing permissions.</p>
+                        <button id="request-staff-access" class="button secondary" type="button">Request staff access</button>
+                        <p id="staff-request-status" class="hint" role="status"></p>
+                    </section>
+                    <section class="card">
+                        <h2>Change password</h2>
+                        <form id="password-form">
+                            <label>New password <input id="new-password" type="password" autocomplete="new-password" minlength="8" required></label>
+                            <button class="button" type="submit">Update password</button>
+                        </form>
+                        <p class="hint">If you forgot your password, sign out and use “Forgot your password?” on the sign-in form.</p>
+                    </section>
+                </div>
+            </section>
+        </section>
+
+        <section class="card updates-card">
+            <div class="card-heading-row">
+                <div>
+                    <p class="eyebrow">WHAT'S NEW</p>
+                    <h2>Announcements</h2>
+                </div>
+                <button id="updates-refresh" class="button secondary" type="button">Refresh updates</button>
+            </div>
+            <div class="update-controls">
+                <label class="search-control">Search updates
+                    <input id="updates-search" type="search" placeholder="Search titles, notes, or versions">
+                </label>
+                <label class="filter-control">Show
+                    <select id="updates-type">
+                        <option value="all">Everything</option>
+                        <option value="announcements">Announcements</option>
+                        <option value="releases">Releases</option>
+                    </select>
+                </label>
+            </div>
+            <section id="announcements-section" class="updates-section">
+                <h2 class="updates-subheading">Announcements</h2>
+                <div id="announcements-list" class="item-list"></div>
+            </section>
+            <section id="releases-section" class="updates-section">
+                <h2 class="updates-subheading">Extension versions</h2>
+                <div id="releases-list" class="item-list"></div>
+            </section>
+        </section>
+
+        <section class="card feature-board">
+            <p class="eyebrow">COMMUNITY IDEAS</p>
+            <h2>Feature request board</h2>
+            <p>Browse ideas shared by users and vote for the ones you would find useful. Only public titles and statuses appear here.</p>
+            <label class="search-control">Search ideas before submitting
+                <input id="feature-search" type="search" placeholder="Find a similar idea">
+            </label>
+            <div id="feature-requests-list" class="item-list"></div>
+        </section>
+
+        <section class="card help-center">
+            <p class="eyebrow">HELP CENTER</p>
+            <h2>Install and update guide</h2>
+            <p>Downloads are manual: choose a ZIP above, extract it, then load the folder in your browser. The portal never installs an update automatically.</p>
+            <details>
+                <summary>Install or update in Chrome</summary>
+                <ol>
+                    <li>Download and extract the extension ZIP.</li>
+                    <li>Open <code>chrome://extensions</code> and turn on <strong>Developer mode</strong>.</li>
+                    <li>For a first install, choose <strong>Load unpacked</strong> and select the extracted folder containing <code>manifest.json</code>.</li>
+                    <li>For an update, replace the old folder with the new files, then select <strong>Reload</strong> on the extension card.</li>
+                </ol>
+            </details>
+            <details>
+                <summary>Install or update in Microsoft Edge</summary>
+                <ol>
+                    <li>Download and extract the extension ZIP.</li>
+                    <li>Open <code>edge://extensions</code> and turn on <strong>Developer mode</strong>.</li>
+                    <li>For a first install, choose <strong>Load unpacked</strong> and select the extracted folder containing <code>manifest.json</code>.</li>
+                    <li>For an update, replace the old folder with the new files, then select <strong>Reload</strong> on the extension card.</li>
+                </ol>
+            </details>
+            <h2 class="updates-subheading">Quick answers</h2>
+            <details>
+                <summary>How do I share an idea or report a problem?</summary>
+                <p>Create an account or sign in, open the Feedback section, and send a short description. You can follow the status under My submissions.</p>
+            </details>
+            <details>
+                <summary>Who can publish announcements and releases?</summary>
+                <p>Only approved staff can publish. User accounts cannot edit extension releases or announcements.</p>
+            </details>
+        </section>
+
+        <footer class="user-footer">
+            <a href="../">Back to GRND Admin Hub</a>
+            <a href="../admin-portal/">Staff workspace</a>
+        </footer>
+    </main>
+
+    <script src="../config.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.119.0/dist/umd/supabase.js"></script>
+    <script src="portal.js"></script>
+</body>
+</html>

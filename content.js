@@ -19,6 +19,9 @@
     const LS_ADMIN = "grnd_V.Varma";
     const LS_CUSTOM = "grnd_custom_templates";
     const LS_SECTIONS = "grnd_custom_sections";
+    const LS_FAVORITE_TEMPLATES = "grnd_favorite_templates";
+    const LS_DARK_THEME = "grnd_dark_theme";
+    const FAVORITES_SECTION_NAME = "★ Favorites";
     const LS_REPORTS = "grnd_report_history";
     const LS_DISMISSED_ANNOUNCEMENTS = "grnd_dismissed_announcements";
     const USAGE_OPT_OUT = "grnd_usage_opt_out";
@@ -29,6 +32,8 @@
     const SUPABASE_ANON_KEY = window.GRND_CONFIG && window.GRND_CONFIG.supabaseAnonKey;
     let extensionAnnouncements = [];
     let extensionReleases = [];
+    let historyVisibleReports = [];
+    let activeHistoryRange = "week";
 
     function getExtensionStorage(keys) {
         return new Promise((resolve, reject) => {
@@ -187,17 +192,35 @@
         const releaseList = document.getElementById("grnd-updates-releases");
         if (!announcementList || !releaseList) return;
 
-        announcementList.innerHTML = extensionAnnouncements.length
-            ? extensionAnnouncements.map(item => `
+        const search = document.getElementById("grnd-updates-search").value.trim().toLocaleLowerCase();
+        const type = document.getElementById("grnd-updates-type").value;
+        const showAnnouncements = type !== "releases";
+        const showReleases = type !== "announcements";
+        document.getElementById("grnd-updates-announcement-section").hidden = !showAnnouncements;
+        document.getElementById("grnd-updates-release-section").hidden = !showReleases;
+
+        const announcements = extensionAnnouncements.filter(item =>
+            `${item.title} ${item.message}`.toLocaleLowerCase().includes(search)
+        );
+        const releases = extensionReleases.filter(item =>
+            `${item.version} ${item.title} ${item.release_notes}`.toLocaleLowerCase().includes(search)
+        );
+        document.getElementById("grnd-updates-announcement-count").textContent = announcements.length;
+        document.getElementById("grnd-updates-release-count").textContent = releases.length;
+        document.getElementById("grnd-updates-results").textContent =
+            `${extensionAnnouncements.length + extensionReleases.length} updates · ${announcements.length + releases.length} shown`;
+
+        announcementList.innerHTML = announcements.length
+            ? announcements.map(item => `
                 <article class="grnd-update-card">
                     <strong>${escapeHtml(item.title)}</strong>
                     <div class="grnd-update-date">${escapeHtml(new Date(item.published_at).toLocaleString())}</div>
                     <p>${escapeHtml(item.message)}</p>
                 </article>`).join("")
-            : '<div class="grnd-update-empty">No announcements.</div>';
+            : `<div class="grnd-update-empty">${search ? "No announcements match your search." : "No announcements yet."}</div>`;
 
-        releaseList.innerHTML = extensionReleases.length
-            ? extensionReleases.map(item => {
+        releaseList.innerHTML = releases.length
+            ? releases.map(item => {
                 const url = safeHttpsUrl(getReleaseDownloadUrl(item.package_path));
                 return `
                     <article class="grnd-update-card">
@@ -207,7 +230,7 @@
                         ${url ? `<a class="grnd-update-download" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">Download this version</a>` : ""}
                     </article>`;
             }).join("")
-            : '<div class="grnd-update-empty">No versions have been published.</div>';
+            : `<div class="grnd-update-empty">${search ? "No releases match your search." : "No versions have been published."}</div>`;
     }
 
     function renderAnnouncementBanners() {
@@ -240,6 +263,8 @@
     async function loadExtensionUpdates() {
         const bannerContainer = document.getElementById("grnd-announcements-banners");
         if (bannerContainer) bannerContainer.textContent = "Loading announcements...";
+        const updateStatus = document.getElementById("grnd-updates-status");
+        if (updateStatus) updateStatus.textContent = "Refreshing announcements and releases...";
         try {
             const [announcements, releases] = await Promise.all([
                 fetchPublishedRows("extension_announcements", "id,title,message,published_at", "published_at.desc"),
@@ -249,12 +274,12 @@
             extensionReleases = releases;
             renderAnnouncementBanners();
             renderUpdateContent();
+            if (updateStatus) updateStatus.textContent = `Updated ${new Date().toLocaleTimeString()}.`;
         } catch (err) {
             console.error("Could not load extension announcements and releases:", err);
             if (bannerContainer) {
                 bannerContainer.textContent = "Announcements and updates are temporarily unavailable.";
             }
-            const updateStatus = document.getElementById("grnd-updates-status");
             if (updateStatus) updateStatus.textContent = "Could not load updates: " + err.message;
         }
     }
@@ -427,6 +452,37 @@
         }).filter(Boolean);
 
         localStorage.setItem(LS_SECTIONS, JSON.stringify(normalized));
+    }
+
+    function getFavoriteTemplateKeys() {
+        try {
+            const raw = localStorage.getItem(LS_FAVORITE_TEMPLATES);
+            const keys = raw ? JSON.parse(raw) : [];
+            return Array.isArray(keys) ? keys.filter(key => typeof key === "string") : [];
+        } catch (error) {
+            console.error("Could not read favorite templates:", error);
+            return [];
+        }
+    }
+
+    function templateFavoriteKey(template) {
+        return JSON.stringify([template.name || "", template.text || "", template.punishment || ""]);
+    }
+
+    function isFavoriteTemplate(template) {
+        return getFavoriteTemplateKeys().includes(templateFavoriteKey(template));
+    }
+
+    function toggleFavoriteTemplate(template) {
+        const key = templateFavoriteKey(template);
+        const keys = getFavoriteTemplateKeys();
+        const next = keys.includes(key) ? keys.filter(item => item !== key) : [...keys, key];
+        localStorage.setItem(LS_FAVORITE_TEMPLATES, JSON.stringify(next));
+    }
+
+    function applyTheme(isDark, persist = false) {
+        document.documentElement.dataset.grndTheme = isDark ? "dark" : "light";
+        if (persist) localStorage.setItem(LS_DARK_THEME, String(isDark));
     }
 
     function syncCustomSectionData() {
@@ -946,6 +1002,12 @@
             defaultCustom.templates = [...(defaultCustom.templates || []), ...legacy];
         }
 
+        const favoriteKeys = new Set(getFavoriteTemplateKeys());
+        const favorites = sections.flatMap(section => (section.templates || [])
+            .filter(template => favoriteKeys.has(templateFavoriteKey(template)))
+            .map(template => ({ ...template, section: section.section })));
+        if (favorites.length) sections.unshift({ section: FAVORITES_SECTION_NAME, templates: favorites });
+
         return sections;
     }
 
@@ -956,8 +1018,11 @@
     let currentInputKeys = [];
     let activeSectionIndex = 0;
 
-    function refreshSections() {
+    function refreshSections(preferredSection) {
+        const currentSection = preferredSection || (templateSections[activeSectionIndex] && templateSections[activeSectionIndex].section);
         templateSections = getAllSections();
+        const nextIndex = templateSections.findIndex(section => section.section === currentSection);
+        activeSectionIndex = nextIndex >= 0 ? nextIndex : 0;
         renderSectionButtons();
         renderTemplateButtons();
     }
@@ -1250,8 +1315,11 @@
         if (!cs || !Array.isArray(cs.templates)) return;
         cs.templates.forEach(template => {
             if (!template.name) return;
+            const entry = document.createElement("div");
+            entry.className = "grnd-template-entry";
             const button = document.createElement("button");
             button.classList.add("template-button");
+            button.type = "button";
             button.innerText = template.name;
             if (template.colour) button.style.setProperty("background", template.colour, "important");
 
@@ -1265,7 +1333,24 @@
                 if (templateNeedsInput(template) || templateNeedsSelection(template)) openPopup(template);
                 else processAndPaste(template, {}, "", ta);
             });
-            area.appendChild(button);
+
+            const favoriteButton = document.createElement("button");
+            favoriteButton.type = "button";
+            favoriteButton.className = "grnd-template-favorite";
+            const isFavorite = isFavoriteTemplate(template);
+            favoriteButton.textContent = isFavorite ? "★" : "☆";
+            favoriteButton.setAttribute("aria-pressed", String(isFavorite));
+            favoriteButton.setAttribute("aria-label", isFavorite ? `Remove ${template.name} from favorites` : `Add ${template.name} to favorites`);
+            favoriteButton.title = isFavorite ? "Remove from favorites" : "Add to favorites";
+            favoriteButton.addEventListener("click", event => {
+                event.preventDefault();
+                event.stopPropagation();
+                toggleFavoriteTemplate(template);
+                refreshSections(cs.section);
+            });
+
+            entry.append(button, favoriteButton);
+            area.appendChild(entry);
         });
         updateBodyPadding();
     }
@@ -1276,20 +1361,27 @@
         const overlay = document.createElement("div");
         overlay.id = "grnd-history-overlay";
         overlay.innerHTML = `
-            <div id="grnd-history-box">
+            <section id="grnd-history-box" role="dialog" aria-modal="true" aria-labelledby="grnd-history-title">
                 <div id="grnd-history-header">
                     <div id="grnd-history-title">📊 Reports History & Punishments</div>
-                    <button id="grnd-history-close">✕</button>
+                    <button id="grnd-history-close" type="button" aria-label="Close report history">✕</button>
                 </div>
                 <div class="grnd-history-filter-bar">
-                    <button class="grnd-hist-filter-btn active" data-range="week">This Week</button>
-                    <button class="grnd-hist-filter-btn" data-range="month">This Month</button>
-                    <button class="grnd-hist-filter-btn" data-range="all">All Time</button>
-                    <button id="grnd-hist-refresh" class="grnd-settings-action-btn grnd-btn-save" style="margin-left:auto;">🔄 Refresh</button>
+                    <div class="grnd-history-range" role="group" aria-label="Filter report history by date">
+                        <button class="grnd-hist-filter-btn active" type="button" data-range="week">This Week</button>
+                        <button class="grnd-hist-filter-btn" type="button" data-range="month">This Month</button>
+                        <button class="grnd-hist-filter-btn" type="button" data-range="all">All Time</button>
+                    </div>
+                    <button id="grnd-history-export" class="grnd-settings-action-btn grnd-btn-export" type="button">Export CSV</button>
+                    <button id="grnd-hist-refresh" class="grnd-settings-action-btn grnd-btn-save" type="button">↻ Refresh</button>
                 </div>
+                <label class="grnd-history-search">Search local history
+                    <input id="grnd-history-search" type="search" placeholder="Report number, player, admin, or template">
+                </label>
                 <div id="grnd-history-stats" class="grnd-history-stats-box">Loading analytics...</div>
+                <div id="grnd-history-feedback" class="grnd-history-feedback" role="status" aria-live="polite"></div>
                 <div id="grnd-history-list" class="grnd-history-list-area"></div>
-            </div>`;
+            </section>`;
         document.body.appendChild(overlay);
 
         document.getElementById("grnd-history-close").addEventListener("click", closeHistoryModal);
@@ -1298,17 +1390,39 @@
         overlay.querySelectorAll(".grnd-hist-filter-btn").forEach(btn => {
             btn.addEventListener("click", (e) => {
                 overlay.querySelectorAll(".grnd-hist-filter-btn").forEach(b => b.classList.remove("active"));
-                e.target.classList.add("active");
-                fetchAndRenderHistory(e.target.dataset.range);
+                e.currentTarget.classList.add("active");
+                fetchAndRenderHistory(e.currentTarget.dataset.range);
             });
         });
 
+        document.getElementById("grnd-history-search").addEventListener("input", () => {
+            fetchAndRenderHistory(activeHistoryRange);
+        });
+        document.getElementById("grnd-history-export").addEventListener("click", exportReportHistory);
         document.getElementById("grnd-hist-refresh").addEventListener("click", () => {
             const activeRange = overlay.querySelector(".grnd-hist-filter-btn.active")?.dataset.range || "week";
             fetchAndRenderHistory(activeRange);
         });
 
-        document.getElementById("grnd-history-list").addEventListener("click", e => {
+        document.getElementById("grnd-history-list").addEventListener("click", async e => {
+            const copyButton = e.target.closest(".grnd-hist-copy-btn");
+            if (copyButton) {
+                try {
+                    const report = getReportHistory().find(item => String(item.id) === copyButton.dataset.reportId);
+                    const commands = report && Array.isArray(report.punishments) ? report.punishments.filter(Boolean) : [];
+                    if (!commands.length) {
+                        showStatus("grnd-history-feedback", "This report has no punishment commands to copy.", "#d97706");
+                        return;
+                    }
+                    await navigator.clipboard.writeText(commands.join("\n"));
+                    showStatus("grnd-history-feedback", "Punishment commands copied.", "#16a34a");
+                } catch (err) {
+                    console.error("Could not copy report commands:", err);
+                    showStatus("grnd-history-feedback", "Could not copy commands: " + err.message, "#dc2626");
+                }
+                return;
+            }
+
             const button = e.target.closest(".grnd-hist-delete-btn");
             if (!button || !window.confirm("Delete this report from your local history?")) return;
 
@@ -1320,7 +1434,7 @@
                 fetchAndRenderHistory(activeRange);
             } catch (err) {
                 console.error("Could not delete report history entry:", err);
-                document.getElementById("grnd-history-stats").textContent = "Could not delete report: " + err.message;
+                showStatus("grnd-history-feedback", "Could not delete report: " + err.message, "#dc2626");
             }
         });
     }
@@ -1330,6 +1444,7 @@
         const listEl = document.getElementById("grnd-history-list");
         if (!statsEl || !listEl) return;
 
+        activeHistoryRange = range;
         statsEl.textContent = "Loading your local report history...";
         listEl.innerHTML = "";
 
@@ -1345,14 +1460,33 @@
                 startDate = new Date(now.getFullYear(), now.getMonth(), 1);
             }
 
-            const data = getReportHistory()
+            const rangeReports = getReportHistory()
                 .filter(item => !startDate || new Date(item.created_at) >= startDate)
                 .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+            const search = document.getElementById("grnd-history-search").value.trim().toLocaleLowerCase();
+            const data = rangeReports.filter(item => {
+                const searchText = [
+                    item.complain_number,
+                    item.admin_name,
+                    item.complain_from,
+                    item.complain_on,
+                    item.template_name,
+                    ...(Array.isArray(item.punishments) ? item.punishments : [])
+                ].join(" ").toLocaleLowerCase();
+                return searchText.includes(search);
+            });
+            historyVisibleReports = data;
 
-            statsEl.innerHTML = `Total Reports (${range.toUpperCase()}): <strong>${data.length}</strong>`;
+            const players = new Set(data.map(item => String(item.complain_on || "").trim()).filter(Boolean)).size;
+            const punishments = data.reduce((total, item) => total + (Array.isArray(item.punishments) ? item.punishments.length : 0), 0);
+            statsEl.innerHTML = `
+                <div class="grnd-history-stat"><span>Reports shown</span><strong>${data.length}</strong><small>of ${rangeReports.length} ${range === "all" ? "total" : range}</small></div>
+                <div class="grnd-history-stat"><span>Players</span><strong>${players}</strong><small>in the filtered results</small></div>
+                <div class="grnd-history-stat"><span>Commands</span><strong>${punishments}</strong><small>saved locally</small></div>`;
+            document.getElementById("grnd-history-export").disabled = data.length === 0;
 
             if (!data.length) {
-                listEl.innerHTML = `<div style="text-align:center; padding:20px; color:#64748b;">No reports found for this timeframe.</div>`;
+                listEl.innerHTML = `<div class="grnd-update-empty">${search ? "No reports match your search in this timeframe." : "No reports found for this timeframe."}</div>`;
                 return;
             }
 
@@ -1367,6 +1501,7 @@
                         <div class="grnd-hist-card-header">
                             <span class="grnd-hist-comp">Comp #${escapeHtml(String(item.complain_number || ''))}</span>
                             <span class="grnd-hist-date">${escapeHtml(dateStr)}</span>
+                            <button class="grnd-hist-copy-btn" data-report-id="${escapeHtml(String(item.id || ''))}" type="button">Copy commands</button>
                             <button class="grnd-hist-delete-btn" data-report-id="${escapeHtml(String(item.id || ''))}" type="button">Delete</button>
                         </div>
                         <div class="grnd-hist-details">
@@ -1385,12 +1520,44 @@
         } catch (err) {
             console.error("Could not load local report history:", err);
             statsEl.textContent = "Could not load local report history: " + err.message;
+            historyVisibleReports = [];
+            document.getElementById("grnd-history-export").disabled = true;
+        }
+    }
+
+    function exportReportHistory() {
+        if (!historyVisibleReports.length) return;
+        try {
+            const headers = ["Report number", "Date", "Admin", "Complainant", "Reported player", "Template", "Punishments"];
+            const csvCell = value => `"${String(value == null ? "" : value).replace(/"/g, '""')}"`;
+            const rows = historyVisibleReports.map(item => [
+                item.complain_number,
+                item.created_at,
+                item.admin_name,
+                item.complain_from,
+                item.complain_on,
+                item.template_name,
+                Array.isArray(item.punishments) ? item.punishments.join("; ") : ""
+            ]);
+            const csv = [headers, ...rows].map(row => row.map(csvCell).join(",")).join("\r\n");
+            const url = URL.createObjectURL(new Blob(["\ufeff", csv], { type: "text/csv;charset=utf-8" }));
+            const link = document.createElement("a");
+            link.href = url;
+            link.download = `GRND_Report_History_${new Date().toISOString().slice(0, 10)}.csv`;
+            link.click();
+            window.setTimeout(() => URL.revokeObjectURL(url), 0);
+            showStatus("grnd-history-feedback", `Exported ${historyVisibleReports.length} local reports.`, "#16a34a");
+        } catch (err) {
+            console.error("Could not export report history:", err);
+            showStatus("grnd-history-feedback", "Could not export report history: " + err.message, "#dc2626");
         }
     }
 
     function openHistoryModal() {
         createHistoryModal();
         document.getElementById("grnd-history-overlay").style.display = "block";
+        const overlay = document.getElementById("grnd-history-overlay");
+        overlay.querySelectorAll(".grnd-hist-filter-btn").forEach(button => button.classList.toggle("active", button.dataset.range === "week"));
         fetchAndRenderHistory("week");
     }
 
@@ -1404,25 +1571,44 @@
         const overlay = document.createElement("div");
         overlay.id = "grnd-updates-overlay";
         overlay.innerHTML = `
-            <div id="grnd-updates-box">
+            <section id="grnd-updates-box" role="dialog" aria-modal="true" aria-labelledby="grnd-updates-title">
                 <div id="grnd-updates-header">
-                    <strong>Announcements & Extension Updates</strong>
+                    <strong id="grnd-updates-title">Announcements & Extension Updates</strong>
                     <div class="grnd-updates-header-actions">
                         <button id="grnd-updates-refresh" type="button">Refresh</button>
                         <button id="grnd-updates-close" type="button" aria-label="Close">✕</button>
                     </div>
                 </div>
                 <div id="grnd-updates-status" role="status"></div>
-                <h3>Announcements</h3>
-                <div id="grnd-updates-announcements"></div>
-                <h3>Release history</h3>
-                <div id="grnd-updates-releases"></div>
+                <div class="grnd-updates-toolbar">
+                    <label>Search announcements and releases
+                        <input id="grnd-updates-search" type="search" placeholder="Search title, notes, or version">
+                    </label>
+                    <label>Show
+                        <select id="grnd-updates-type">
+                            <option value="all">Everything</option>
+                            <option value="announcements">Announcements</option>
+                            <option value="releases">Releases</option>
+                        </select>
+                    </label>
+                </div>
+                <div id="grnd-updates-results" class="grnd-updates-results"></div>
+                <section id="grnd-updates-announcement-section">
+                    <h3>Announcements <span id="grnd-updates-announcement-count">0</span></h3>
+                    <div id="grnd-updates-announcements"></div>
+                </section>
+                <section id="grnd-updates-release-section">
+                    <h3>Release history <span id="grnd-updates-release-count">0</span></h3>
+                    <div id="grnd-updates-releases"></div>
+                </section>
                 <p class="grnd-updates-help">Choose a version to download its ZIP. Install it manually using your browser's extension developer mode.</p>
-                <p class="grnd-updates-help"><a href="https://auctiongrnd.github.io/GRND-Complaint-Tools/" target="_blank" rel="noopener noreferrer">Help, support, and feedback</a></p>
-            </div>`;
+                <p class="grnd-updates-help"><a href="https://auctiongrnd.github.io/GRND-Complaint-Tools/user-portal/" target="_blank" rel="noopener noreferrer">Help, support, and feedback</a></p>
+            </section>`;
         document.body.appendChild(overlay);
         document.getElementById("grnd-updates-close").addEventListener("click", closeUpdatesModal);
         document.getElementById("grnd-updates-refresh").addEventListener("click", loadExtensionUpdates);
+        document.getElementById("grnd-updates-search").addEventListener("input", renderUpdateContent);
+        document.getElementById("grnd-updates-type").addEventListener("change", renderUpdateContent);
         overlay.addEventListener("click", e => {
             if (e.target === overlay) closeUpdatesModal();
         });
@@ -1450,13 +1636,22 @@
         const overlay = document.createElement("div");
         overlay.id = "grnd-settings-overlay";
         overlay.innerHTML = `
-        <div id="grnd-settings-box">
+        <section id="grnd-settings-box" role="dialog" aria-modal="true" aria-labelledby="grnd-settings-title">
             <div id="grnd-settings-header">
                 <div id="grnd-settings-title">⚙️ Extension Settings</div>
-                <button id="grnd-settings-close">✕</button>
+                <button id="grnd-settings-close" type="button" aria-label="Close settings">✕</button>
             </div>
+            <p class="grnd-settings-intro">Personalize your workspace. Preferences and templates are saved on this browser.</p>
+            <nav class="grnd-settings-nav" aria-label="Jump to a settings section">
+                <button type="button" data-settings-jump="grnd-settings-admin">Profile</button>
+                <button type="button" data-settings-jump="grnd-settings-sections">Sections</button>
+                <button type="button" data-settings-jump="grnd-settings-templates">Templates</button>
+                <button type="button" data-settings-jump="grnd-settings-appearance">Appearance</button>
+                <button type="button" data-settings-jump="grnd-settings-backup">Backup</button>
+                <button type="button" data-settings-jump="grnd-settings-privacy">Privacy</button>
+            </nav>
 
-            <div class="grnd-settings-section">
+            <div id="grnd-settings-admin" class="grnd-settings-section">
                 <div class="grnd-settings-section-title">Admin Name</div>
                 <div class="grnd-settings-row">
                     <input type="text" id="grnd-admin-input" placeholder="Enter admin name..." class="grnd-settings-input-big">
@@ -1467,7 +1662,7 @@
 
             <div class="grnd-settings-divider"></div>
 
-            <div class="grnd-settings-section">
+            <div id="grnd-settings-sections" class="grnd-settings-section">
                 <div class="grnd-settings-section-title">Section Manager</div>
                 <div class="grnd-settings-row">
                     <input type="text" id="grnd-section-name" placeholder="New section name" class="grnd-settings-input-big">
@@ -1483,7 +1678,7 @@
 
             <div class="grnd-settings-divider"></div>
 
-            <div class="grnd-settings-section">
+            <div id="grnd-settings-templates" class="grnd-settings-section">
                 <div class="grnd-settings-section-title">Add Custom Judgement</div>
                 <div id="grnd-custom-form">
                     <div class="grnd-form-group">
@@ -1525,7 +1720,18 @@
 
             <div class="grnd-settings-divider"></div>
 
-            <div class="grnd-settings-section">
+            <div id="grnd-settings-appearance" class="grnd-settings-section">
+                <div class="grnd-settings-section-title">Appearance</div>
+                <label class="grnd-analytics-label">
+                    <input type="checkbox" id="grnd-dark-theme">
+                    Use the dark extension theme
+                </label>
+                <p class="grnd-updates-help">This changes only the extension panel and its dialogs on this browser.</p>
+            </div>
+
+            <div class="grnd-settings-divider"></div>
+
+            <div id="grnd-settings-backup" class="grnd-settings-section">
                 <div class="grnd-settings-section-title">Backup & Restore</div>
                 <div class="grnd-settings-row grnd-backup-row">
                     <button id="grnd-backup-save" class="grnd-settings-action-btn grnd-btn-backup">Export Backup</button>
@@ -1538,7 +1744,7 @@
 
             <div class="grnd-settings-divider"></div>
 
-            <div class="grnd-settings-section">
+            <div id="grnd-settings-privacy" class="grnd-settings-section">
                 <div class="grnd-settings-section-title">Privacy & Usage</div>
                 <label class="grnd-analytics-label">
                     <input type="checkbox" id="grnd-usage-enabled" checked>
@@ -1547,11 +1753,20 @@
                 <p class="grnd-updates-help">When enabled, the extension sends a random installation ID and version at most once a day. It does not send report history, admin name, or complaint content. You can turn this off any time; your stored install count will be deleted.</p>
                 <div id="grnd-usage-status" class="grnd-settings-status" role="status"></div>
             </div>
-        </div>`;
+        </section>`;
         document.body.appendChild(overlay);
 
         document.getElementById("grnd-settings-close").addEventListener("click", closeSettings);
         overlay.addEventListener("click", e => { if (e.target === overlay) closeSettings(); });
+        overlay.querySelectorAll("[data-settings-jump]").forEach(button => {
+            button.addEventListener("click", event => {
+                const target = document.getElementById(event.currentTarget.dataset.settingsJump);
+                if (!target) return;
+                overlay.querySelectorAll("[data-settings-jump]").forEach(item => item.classList.remove("active"));
+                event.currentTarget.classList.add("active");
+                target.scrollIntoView({ behavior: "smooth", block: "start" });
+            });
+        });
 
         const adminInput = document.getElementById("grnd-admin-input");
         const saved = localStorage.getItem(LS_ADMIN);
@@ -1578,6 +1793,9 @@
         document.getElementById("grnd-section-delete").addEventListener("click", deleteCustomSection);
         document.getElementById("grnd-backup-save").addEventListener("click", downloadBackup);
         document.getElementById("grnd-backup-upload").addEventListener("change", uploadBackup);
+        const themeToggle = document.getElementById("grnd-dark-theme");
+        themeToggle.checked = document.documentElement.dataset.grndTheme === "dark";
+        themeToggle.addEventListener("change", () => applyTheme(themeToggle.checked, true));
         const usageToggle = document.getElementById("grnd-usage-enabled");
         getExtensionStorage(USAGE_OPT_OUT).then(settings => {
             usageToggle.checked = settings[USAGE_OPT_OUT] !== true;
@@ -1613,6 +1831,10 @@
         const input = document.getElementById("grnd-section-name");
         const name = input ? input.value.trim() : "";
         if (!name) return;
+        if (name.toLowerCase() === FAVORITES_SECTION_NAME.toLowerCase()) {
+            showStatus("grnd-section-status", "That section name is reserved for favorites.", "#dc2626");
+            return;
+        }
         const sections = getCustomSections();
         if (sections.some(s => s.section.toLowerCase() === name.toLowerCase())) return;
         sections.push({ section: name, templates: [] });
@@ -1630,6 +1852,10 @@
         const newName = prompt("Rename section:", oldName);
         if (!newName || !newName.trim()) return;
         const cleaned = newName.trim();
+        if (cleaned.toLowerCase() === FAVORITES_SECTION_NAME.toLowerCase()) {
+            showStatus("grnd-section-status", "That section name is reserved for favorites.", "#dc2626");
+            return;
+        }
         const sections = getCustomSections();
         const target = sections.find(s => s.section === oldName);
         if (!target) return;
@@ -1735,7 +1961,12 @@
     }
 
     function downloadBackup() {
-        const data = { adminName: localStorage.getItem(LS_ADMIN) || "", customTemplates: getCustomTemplates() };
+        const data = {
+            adminName: localStorage.getItem(LS_ADMIN) || "",
+            customTemplates: getCustomTemplates(),
+            favoriteTemplates: getFavoriteTemplateKeys(),
+            darkTheme: document.documentElement.dataset.grndTheme === "dark"
+        };
         const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a"); a.href = url;
@@ -1752,8 +1983,15 @@
                 const data = JSON.parse(ev.target.result);
                 if (data.adminName) localStorage.setItem(LS_ADMIN, data.adminName);
                 if (Array.isArray(data.customTemplates)) saveCustomTemplates(data.customTemplates);
+                if (Array.isArray(data.favoriteTemplates)) {
+                    localStorage.setItem(LS_FAVORITE_TEMPLATES, JSON.stringify(data.favoriteTemplates.filter(key => typeof key === "string")));
+                }
+                if (typeof data.darkTheme === "boolean") {
+                    applyTheme(data.darkTheme, true);
+                    document.getElementById("grnd-dark-theme").checked = data.darkTheme;
+                }
                 renderCustomList(); refreshSections();
-                alert("Backup restored successfully!");
+                showStatus("grnd-backup-status", "Backup restored successfully.", "#16a34a");
             } catch (err) { alert("Invalid backup file!"); }
         };
         reader.readAsText(file);
@@ -1842,6 +2080,9 @@
                 background: #ffffff; padding: 24px; width: 90%; max-width: 650px; max-height: 85vh;
                 overflow-y: auto; border-radius: 12px; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1);
             }
+            #grnd-settings-box { max-width: 780px; scroll-behavior: smooth; }
+            #grnd-history-box { max-width: 900px; }
+            #grnd-updates-box { max-width: 820px; }
             #grnd-popup-header, #grnd-settings-header, #grnd-history-header, #grnd-updates-header {
                 display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; border-bottom: 1px solid #e2e8f0; padding-bottom: 12px;
             }
@@ -1873,6 +2114,18 @@
             .grnd-form-group { margin-bottom: 12px; }
             .grnd-form-group label { display: block; font-size: 13px; font-weight: 600; color: #475569; margin-bottom: 4px; }
             .grnd-settings-input, .grnd-settings-textarea { width: 100%; padding: 8px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 13px; box-sizing: border-box; }
+            .grnd-settings-input-big { min-width: 0; flex: 1; padding: 8px 10px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 13px; }
+            .grnd-settings-section-title { margin-bottom: 8px; color: #1e293b; font-size: 14px; font-weight: 700; }
+            .grnd-settings-section[id] { padding: 14px; border: 1px solid #e2e8f0; border-radius: 9px; background: #f8fafc; }
+            .grnd-settings-divider { height: 1px; margin: 16px 0; background: #e2e8f0; }
+            .grnd-settings-row { display: flex; align-items: center; gap: 8px; }
+            .grnd-settings-status { min-height: 16px; margin-top: 6px; font-size: 12px; }
+            .grnd-settings-intro { margin: 0 0 8px; color: #64748b; font-size: 13px; }
+            .grnd-settings-nav { display: flex; gap: 7px; overflow-x: auto; padding: 8px 0 14px; margin-bottom: 4px; }
+            .grnd-settings-nav button { flex: 0 0 auto; padding: 7px 11px; border: 1px solid #cbd5e1; border-radius: 999px; background: #f8fafc; color: #475569; font-size: 12px; font-weight: 700; cursor: pointer; }
+            .grnd-settings-nav button:hover { border-color: #60a5fa; color: #1d4ed8; }
+            .grnd-settings-nav button.active { background: #dbeafe; border-color: #93c5fd; color: #1d4ed8; }
+            .grnd-settings-section[id] { scroll-margin-top: 20px; }
             .grnd-settings-action-btn { padding: 8px 16px; font-size: 13px; font-weight: 600; border-radius: 6px; border: none; cursor: pointer; color: white; }
             .grnd-btn-save { background: #16a34a; }
             .grnd-btn-add { background: #2563eb; width: 100%; margin-top: 8px; }
@@ -1880,20 +2133,34 @@
             .grnd-custom-delete { background: #dc2626; color: white; border: none; padding: 4px 8px; border-radius: 4px; font-size: 12px; cursor: pointer; }
 
             /* History Modal Styling */
-            .grnd-history-filter-bar { display: flex; gap: 6px; margin-bottom: 12px; align-items: center; }
+            .grnd-history-filter-bar { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 12px; align-items: center; }
+            .grnd-history-range { display: flex; flex-wrap: wrap; gap: 6px; margin-right: auto; }
             .grnd-hist-filter-btn { background: #f1f5f9; border: 1px solid #cbd5e1; padding: 6px 12px; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer; color: #475569; }
             .grnd-hist-filter-btn.active { background: #2563eb; color: #fff; border-color: #2563eb; }
-            .grnd-history-stats-box { background: #f8fafc; padding: 10px 14px; border-radius: 6px; border: 1px solid #e2e8f0; font-size: 13px; margin-bottom: 12px; color: #334155; }
-            .grnd-history-list-area { max-height: 450px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding-right: 4px; }
+            .grnd-history-search { display: grid; gap: 6px; margin-bottom: 12px; color: #475569; font-size: 12px; font-weight: 700; }
+            .grnd-history-stats-box { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-bottom: 12px; }
+            .grnd-history-stat { display: grid; gap: 4px; padding: 11px 13px; border: 1px solid #e2e8f0; border-radius: 8px; background: #f8fafc; }
+            .grnd-history-stat span { color: #64748b; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
+            .grnd-history-stat strong { color: #1d4ed8; font-size: 22px; }
+            .grnd-history-stat small { color: #64748b; font-size: 11px; }
+            .grnd-history-feedback { min-height: 0; color: #15803d; font-size: 12px; }
+            .grnd-history-list-area { max-height: 48vh; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding-right: 4px; }
             .grnd-hist-card { background: #ffffff; border: 1px solid #cbd5e1; border-radius: 8px; padding: 12px; font-size: 12px; box-shadow: 0 2px 4px rgba(0,0,0,0.02); }
-            .grnd-hist-card-header { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-weight: 700; color: #1e293b; margin-bottom: 6px; border-bottom: 1px solid #f1f5f9; padding-bottom: 4px; }
+            .grnd-hist-card-header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; font-weight: 700; color: #1e293b; margin-bottom: 6px; border-bottom: 1px solid #f1f5f9; padding-bottom: 8px; }
             .grnd-hist-date { color: #64748b; font-weight: normal; font-size: 11px; }
-            .grnd-hist-delete-btn { background: #dc2626; color: #fff; border: 0; border-radius: 4px; padding: 4px 8px; font-size: 11px; cursor: pointer; }
+            .grnd-hist-delete-btn, .grnd-hist-copy-btn { background: #dc2626; color: #fff; border: 0; border-radius: 5px; padding: 5px 8px; font-size: 11px; font-weight: 700; cursor: pointer; }
+            .grnd-hist-copy-btn { background: #2563eb; }
             .grnd-hist-details { color: #475569; display: flex; flex-direction: column; gap: 2px; margin-bottom: 6px; }
             .grnd-hist-punishments-box { background: #f8fafc; padding: 6px 8px; border-radius: 4px; border: 1px solid #e2e8f0; margin-top: 6px; }
             .grnd-hist-punishment { margin-top: 2px; }
             .grnd-hist-punishment code { font-family: monospace; color: #0f172a; background: #e2e8f0; padding: 2px 4px; border-radius: 3px; display: inline-block; }
             #grnd-updates-box h3 { margin: 18px 0 8px; color: #334155; font-size: 15px; }
+            #grnd-updates-box h3 span { display: inline-flex; min-width: 22px; justify-content: center; margin-left: 5px; padding: 2px 6px; border-radius: 999px; background: #dbeafe; color: #1d4ed8; font-size: 11px; vertical-align: 2px; }
+            .grnd-updates-toolbar { display: grid; grid-template-columns: minmax(0, 2fr) minmax(150px, 1fr); gap: 10px; margin: 14px 0 8px; }
+            .grnd-updates-toolbar label { display: grid; gap: 5px; color: #475569; font-size: 12px; font-weight: 700; }
+            .grnd-updates-toolbar input, .grnd-updates-toolbar select, .grnd-history-search input { width: 100%; min-width: 0; padding: 9px 10px; border: 1px solid #cbd5e1; border-radius: 7px; background: #fff; color: #1e293b; font: inherit; font-size: 13px; }
+            .grnd-updates-results { color: #64748b; font-size: 11px; text-align: right; }
+            #grnd-updates-announcement-section[hidden], #grnd-updates-release-section[hidden] { display: none; }
             #grnd-updates-status { color: #b91c1c; font-size: 12px; }
             .grnd-update-card { border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px; margin: 8px 0; color: #1e293b; }
             .grnd-update-card p, .grnd-announcement-banner p { white-space: pre-wrap; overflow-wrap: anywhere; margin: 6px 0 0; font-size: 13px; }
@@ -1904,8 +2171,115 @@
             .grnd-announcement-dismiss { flex: 0 0 auto; border: 0; border-radius: 4px; padding: 5px 8px; background: #dbeafe; color: #1d4ed8; cursor: pointer; font-size: 11px; }
             .grnd-announcement-view { margin-top: 8px; border: 0; border-radius: 4px; padding: 5px 8px; background: #2563eb; color: #fff; cursor: pointer; font-size: 11px; }
             .grnd-updates-help { color: #64748b; font-size: 12px; }
+            .grnd-btn-export { background: #0f766e; }
+            .grnd-btn-export:hover { background: #0d9488; }
+            .grnd-settings-nav button:focus-visible,
+            .grnd-hist-filter-btn:focus-visible,
+            .grnd-hist-copy-btn:focus-visible,
+            .grnd-hist-delete-btn:focus-visible { outline: 2px solid #60a5fa; outline-offset: 2px; }
             .grnd-analytics-label { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: #334155; }
             .grnd-analytics-label input { width: auto; }
+
+            [data-grnd-theme="dark"] #grnd-floating-panel,
+            [data-grnd-theme="dark"] #grnd-popup-box,
+            [data-grnd-theme="dark"] #grnd-settings-box,
+            [data-grnd-theme="dark"] #grnd-history-box,
+            [data-grnd-theme="dark"] #grnd-updates-box {
+                background: #0b1220; color: #e2e8f0; border-color: #26354d;
+                box-shadow: 0 18px 55px rgba(0, 0, 0, .45);
+            }
+            [data-grnd-theme="dark"] #grnd-floating-panel { border-bottom-color: #26354d; }
+            [data-grnd-theme="dark"] #grnd-floating-panel .grnd-top-bar span { color: #e2e8f0 !important; }
+            [data-grnd-theme="dark"] #grnd-settings-btn,
+            [data-grnd-theme="dark"] #grnd-history-btn,
+            [data-grnd-theme="dark"] #grnd-updates-btn,
+            [data-grnd-theme="dark"] #grnd-updates-refresh,
+            [data-grnd-theme="dark"] .grnd-settings-nav button,
+            [data-grnd-theme="dark"] .grnd-section-btn,
+            [data-grnd-theme="dark"] .grnd-hist-filter-btn {
+                background: #121e31; color: #cbd5e1; border-color: #334766;
+            }
+            [data-grnd-theme="dark"] #grnd-settings-btn:hover,
+            [data-grnd-theme="dark"] #grnd-history-btn:hover,
+            [data-grnd-theme="dark"] #grnd-updates-btn:hover,
+            [data-grnd-theme="dark"] .grnd-settings-nav button:hover,
+            [data-grnd-theme="dark"] .grnd-section-btn:hover { background: #1b2b45; color: #f8fafc; }
+            [data-grnd-theme="dark"] .grnd-settings-section[id] { background: #0f1a2b; border-color: #26354d; }
+            [data-grnd-theme="dark"] .grnd-settings-nav button.active { background: #17345a; color: #bfdbfe; border-color: #2563eb; }
+            [data-grnd-theme="dark"] .grnd-section-btn.active,
+            [data-grnd-theme="dark"] .grnd-hist-filter-btn.active { background: #2563eb !important; color: #fff !important; border-color: #3b82f6; }
+            [data-grnd-theme="dark"] #grnd-popup-title,
+            [data-grnd-theme="dark"] #grnd-settings-title,
+            [data-grnd-theme="dark"] #grnd-history-title,
+            [data-grnd-theme="dark"] #grnd-updates-header strong,
+            [data-grnd-theme="dark"] #grnd-updates-box h3 { color: #e2e8f0; }
+            [data-grnd-theme="dark"] #grnd-settings-close,
+            [data-grnd-theme="dark"] #grnd-history-close,
+            [data-grnd-theme="dark"] #grnd-updates-close { color: #94a3b8; }
+            [data-grnd-theme="dark"] #grnd-popup-header,
+            [data-grnd-theme="dark"] #grnd-settings-header,
+            [data-grnd-theme="dark"] #grnd-history-header,
+            [data-grnd-theme="dark"] #grnd-updates-header { border-bottom-color: #26354d; }
+            [data-grnd-theme="dark"] .grnd-settings-input,
+            [data-grnd-theme="dark"] .grnd-settings-input-big,
+            [data-grnd-theme="dark"] .grnd-settings-textarea,
+            [data-grnd-theme="dark"] .grnd-dynamic-input,
+            [data-grnd-theme="dark"] .grnd-selection-input,
+            [data-grnd-theme="dark"] .punishment-output {
+                background: #0f1a2b; color: #e2e8f0; border-color: #334766;
+            }
+            [data-grnd-theme="dark"] .grnd-form-group label,
+            [data-grnd-theme="dark"] .grnd-analytics-label,
+            [data-grnd-theme="dark"] .grnd-settings-section-title,
+            [data-grnd-theme="dark"] .grnd-settings-status,
+            [data-grnd-theme="dark"] .grnd-updates-help,
+            [data-grnd-theme="dark"] .grnd-hist-details,
+            [data-grnd-theme="dark"] .grnd-hist-card-header,
+            [data-grnd-theme="dark"] .punishment-label { color: #cbd5e1; }
+            [data-grnd-theme="dark"] .grnd-settings-divider { background: #26354d; }
+            [data-grnd-theme="dark"] .grnd-custom-item,
+            [data-grnd-theme="dark"] .grnd-hist-card,
+            [data-grnd-theme="dark"] .grnd-history-stats-box,
+            [data-grnd-theme="dark"] .grnd-hist-punishments-box,
+            [data-grnd-theme="dark"] .grnd-hist-punishment code,
+            [data-grnd-theme="dark"] #grnd-popup-preview,
+            [data-grnd-theme="dark"] .grnd-update-card {
+                background: #111d30; color: #dbeafe; border-color: #2a3b56;
+            }
+            [data-grnd-theme="dark"] .grnd-hist-card-header { border-bottom-color: #26354d; }
+            [data-grnd-theme="dark"] .grnd-hist-punishment code { color: #e2e8f0; }
+            [data-grnd-theme="dark"] .grnd-history-stats-box strong { color: #60a5fa; }
+            [data-grnd-theme="dark"] .grnd-history-stat { background: #111d30; border-color: #2a3b56; }
+            [data-grnd-theme="dark"] .grnd-history-stat span,
+            [data-grnd-theme="dark"] .grnd-history-stat small,
+            [data-grnd-theme="dark"] .grnd-history-search { color: #94a3b8; }
+            [data-grnd-theme="dark"] .grnd-history-feedback { color: #86efac; }
+            [data-grnd-theme="dark"] .grnd-btn-export { background: #0f766e; color: #ecfeff; }
+            [data-grnd-theme="dark"] .grnd-updates-toolbar label { color: #cbd5e1; }
+            [data-grnd-theme="dark"] .grnd-updates-toolbar input,
+            [data-grnd-theme="dark"] .grnd-updates-toolbar select,
+            [data-grnd-theme="dark"] .grnd-history-search input { background: #0f1a2b; color: #e2e8f0; border-color: #334766; }
+            [data-grnd-theme="dark"] #grnd-updates-box h3 span { background: #17345a; color: #93c5fd; }
+            [data-grnd-theme="dark"] .grnd-settings-intro,
+            [data-grnd-theme="dark"] .grnd-updates-results { color: #94a3b8; }
+            [data-grnd-theme="dark"] .grnd-announcement-banner { background: #132846; border-color: #1d4b80; color: #bfdbfe; }
+            [data-grnd-theme="dark"] .grnd-announcement-dismiss { background: #1b3a63; color: #bfdbfe; }
+            [data-grnd-theme="dark"] .grnd-update-date,
+            [data-grnd-theme="dark"] .grnd-hist-date,
+            [data-grnd-theme="dark"] .grnd-update-empty { color: #94a3b8; }
+            .grnd-template-entry { display: flex; min-width: 0; gap: 4px; }
+            .grnd-template-entry .template-button { flex: 1; min-width: 0; }
+            .grnd-template-favorite { flex: 0 0 34px; border: 1px solid #cbd5e1; border-radius: 6px; background: #f8fafc; color: #64748b; font-size: 18px; line-height: 1; cursor: pointer; }
+            .grnd-template-favorite:hover { color: #d97706; border-color: #fbbf24; }
+            [data-grnd-theme="dark"] .grnd-template-favorite { background: #121e31; color: #fbbf24; border-color: #334766; }
+            @media (max-width: 620px) {
+                #grnd-settings-box, #grnd-history-box, #grnd-updates-box { width: 96%; padding: 16px; max-height: 92vh; }
+                .grnd-updates-toolbar { grid-template-columns: 1fr; }
+                .grnd-history-stats-box { grid-template-columns: 1fr; }
+                .grnd-history-range { width: 100%; }
+                .grnd-history-filter-bar > button { flex: 1 1 auto; }
+                .grnd-hist-card-header { align-items: flex-start; }
+            }
         `;
         document.head.appendChild(style);
     }
@@ -1913,6 +2287,8 @@
     function addTemplateButtons() {
         if (document.getElementById("grnd-floating-panel")) return;
 
+        const storedTheme = localStorage.getItem(LS_DARK_THEME);
+        applyTheme(storedTheme !== "false");
         injectStyles();
         createPopupUI();
         createPunishmentBox();
@@ -1923,7 +2299,7 @@
         panel.id = "grnd-floating-panel";
         panel.innerHTML = `
             <div class="grnd-top-bar">
-                <span style="font-weight:700; font-size:14px; color:#1e293b;">By Adan_Mirza</span>
+                <span style="font-weight:700; font-size:14px; color:#1e293b;">Grnd Extension 2.0</span>
                 <div class="grnd-top-right-btns">
                     <button id="grnd-updates-btn">📣 Announcements & Updates</button>
                     <button id="grnd-history-btn">📊 Reports History</button>

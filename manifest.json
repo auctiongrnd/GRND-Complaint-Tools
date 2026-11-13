@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "GRND Complaint Tools",
-  "version": "1.4.0",
-  "description": "Complaint templates, local report history, announcements, and release updates for GRND admins",
+  "version": "1.5.1",
+  "description": "Custom verdict templates, favorites, dark theme, searchable report history, and release updates for GRND admins",
 
   "content_scripts": [
     {
