@@ -22,6 +22,7 @@
         authView.hidden = view !== "auth";
         requestView.hidden = view !== "request";
         portalView.hidden = view !== "portal";
+        document.getElementById("feedback-submit-card").hidden = view === "auth";
         signOutButton.hidden = view === "auth";
     }
 
@@ -55,6 +56,7 @@
 
         if (staffError) throw staffError;
         if (!staff) {
+            currentRole = null;
             showView("request");
             const { data: request, error: requestError } = await client
                 .from("extension_access_requests")
@@ -74,16 +76,20 @@
         document.getElementById("welcome").textContent = `Signed in as ${staff.email} (${staff.role})`;
         document.getElementById("requests-card").hidden = staff.role !== "owner";
         document.getElementById("staff-card").hidden = staff.role !== "owner";
+        document.getElementById("usage-card").hidden = staff.role !== "owner";
         await refreshPortalData();
     }
 
     async function refreshPortalData() {
-        await Promise.all([
+        const tasks = [
             loadAnnouncements(),
             loadReleases(),
-            currentRole === "owner" ? loadAccessRequests() : Promise.resolve(),
-            currentRole === "owner" ? loadStaff() : Promise.resolve()
-        ]);
+            loadFeedback()
+        ];
+        if (currentRole === "owner") {
+            tasks.push(loadUsageStats(), loadAccessRequests(), loadStaff());
+        }
+        await Promise.all(tasks);
     }
 
     async function loadAnnouncements() {
@@ -154,6 +160,90 @@
                 ${item.role === "staff" ? `<div class="item-actions"><button class="button danger" data-remove-user="${escapeHtml(item.user_id)}" type="button">Remove access</button></div>` : ""}
             </article>
         `).join("");
+    }
+
+    async function loadUsageStats() {
+        const status = document.getElementById("usage-status");
+        const versionsList = document.getElementById("usage-versions");
+        status.textContent = "Loading usage statistics...";
+        const { data, error } = await client.rpc("get_extension_usage_stats");
+        if (error) {
+            status.textContent = `Could not load usage statistics. Apply the updated Supabase schema. ${error.message}`;
+            throw error;
+        }
+        if (!data || typeof data !== "object" || !Array.isArray(data.versions)) {
+            throw new Error("Usage statistics returned an unexpected response.");
+        }
+
+        const total = Number(data.total_installs);
+        const active = Number(data.active_30_days);
+        const recent = Number(data.new_30_days);
+        if (![total, active, recent].every(value => Number.isSafeInteger(value) && value >= 0)) {
+            throw new Error("Usage statistics contained invalid counts.");
+        }
+        document.getElementById("usage-total").textContent = total.toLocaleString();
+        document.getElementById("usage-active").textContent = active.toLocaleString();
+        document.getElementById("usage-new").textContent = recent.toLocaleString();
+        versionsList.innerHTML = data.versions.length
+            ? data.versions.map(item => {
+                const count = Number(item.active_installs);
+                if (!item.version || !Number.isSafeInteger(count) || count < 0) {
+                    throw new Error("Usage statistics contained an invalid version count.");
+                }
+                return `<article class="item usage-version">
+                    <span>Version ${escapeHtml(item.version)}</span>
+                    <strong>${count.toLocaleString()} active</strong>
+                </article>`;
+            }).join("")
+            : '<p class="empty">No active installations reported yet.</p>';
+        status.textContent = `Updated ${new Date().toLocaleString()}.`;
+    }
+
+    async function loadFeedback() {
+        const list = document.getElementById("feedback-list");
+        const { data, error } = await client
+            .from("extension_feedback")
+            .select("id,email,category,title,message,status,created_at")
+            .order("created_at", { ascending: false });
+        if (error) {
+            list.innerHTML = `<p class="empty">Could not load feedback. Apply the updated Supabase schema. ${escapeHtml(error.message)}</p>`;
+            throw error;
+        }
+        const statuses = ["new", "reviewing", "planned", "done", "declined"];
+        list.innerHTML = data.length ? data.map(item => `
+            <article class="item">
+                <h3>${escapeHtml(item.title)}</h3>
+                <p>${escapeHtml(item.message)}</p>
+                <div class="item-meta">${escapeHtml(item.category)} · ${escapeHtml(item.email)} · ${escapeHtml(dateLabel(item.created_at))}</div>
+                <div class="item-actions">
+                    <label class="feedback-status-label">Status
+                        <select data-feedback-status="${escapeHtml(item.id)}">
+                            ${statuses.map(status => `<option value="${status}" ${status === item.status ? "selected" : ""}>${status}</option>`).join("")}
+                        </select>
+                    </label>
+                    <button class="button secondary" data-update-feedback="${escapeHtml(item.id)}" type="button">Save status</button>
+                </div>
+            </article>
+        `).join("") : '<p class="empty">No feedback submitted yet.</p>';
+    }
+
+    async function submitFeedback(event) {
+        event.preventDefault();
+        if (!currentUser) throw new Error("Sign in before sending feedback.");
+        const title = document.getElementById("feedback-title").value.trim();
+        const message = document.getElementById("feedback-message").value.trim();
+        const category = document.getElementById("feedback-category").value;
+        if (!title || !message) throw new Error("Add a title and details before sending feedback.");
+        const { error } = await client.from("extension_feedback").insert({
+            user_id: currentUser.id,
+            email: currentUser.email.toLowerCase(),
+            category,
+            title,
+            message
+        });
+        if (error) throw error;
+        event.target.reset();
+        setStatus("Feedback sent to the extension staff.");
     }
 
     async function signIn() {
@@ -311,6 +401,15 @@
                 throw new Error(`Release record deleted, but package cleanup failed: ${storageError.message}`);
             }
             setStatus("Release deleted.");
+        } else if (target.dataset.updateFeedback) {
+            const card = target.closest(".item");
+            const select = card && card.querySelector("[data-feedback-status]");
+            if (!select) throw new Error("Could not find the feedback status selector.");
+            const { error } = await client.from("extension_feedback")
+                .update({ status: select.value })
+                .eq("id", target.dataset.updateFeedback);
+            if (error) throw error;
+            setStatus("Feedback status updated.");
         }
     }
 
@@ -341,9 +440,11 @@
             setAuthMode(authMode === "signup" ? "signin" : "signup");
         });
         document.getElementById("request-access").addEventListener("click", () => run(requestAccess));
+        document.getElementById("feedback-form").addEventListener("submit", event => run(() => submitFeedback(event)));
         document.getElementById("announcement-form").addEventListener("submit", event => run(() => publishAnnouncement(event)));
         document.getElementById("release-form").addEventListener("submit", event => run(() => publishRelease(event)));
         document.getElementById("portal-view").addEventListener("click", event => run(() => handlePortalClick(event)));
+        document.getElementById("usage-refresh").addEventListener("click", () => run(loadUsageStats));
         signOutButton.addEventListener("click", () => run(async () => {
             const { error } = await client.auth.signOut();
             if (error) throw error;

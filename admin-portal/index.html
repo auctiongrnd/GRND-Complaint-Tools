@@ -36,6 +36,24 @@
             <h2>Staff access</h2>
             <p id="request-message">Your account is not approved to manage the extension.</p>
             <button id="request-access" class="button" type="button">Request staff access</button>
+            <p class="hint">You can still send feedback and feature requests while waiting for staff approval.</p>
+        </section>
+
+        <section id="feedback-submit-card" class="card" hidden>
+            <h2>Send feedback or request a feature</h2>
+            <p class="hint">Your sign-in email is shared with the extension staff so they can follow up. Do not include report contents or passwords.</p>
+            <form id="feedback-form">
+                <label>Type
+                    <select id="feedback-category" required>
+                        <option value="feature">Feature request</option>
+                        <option value="bug">Bug report</option>
+                        <option value="other">Other feedback</option>
+                    </select>
+                </label>
+                <label>Title <input id="feedback-title" maxlength="120" required></label>
+                <label>Details <textarea id="feedback-message" rows="4" maxlength="4000" required></textarea></label>
+                <button class="button" type="submit">Send feedback</button>
+            </form>
         </section>
 
         <section id="portal-view" hidden>
@@ -43,6 +61,22 @@
                 <h2 id="welcome"></h2>
                 <p>Published announcements appear in the extension. Releases are listed by version and can be downloaded by admins.</p>
             </div>
+
+            <section id="usage-card" class="card" hidden>
+                <div class="card-heading-row">
+                    <h2>Extension growth</h2>
+                    <button id="usage-refresh" class="button secondary" type="button">Refresh stats</button>
+                </div>
+                <p class="hint">Pseudonymous installation estimates; users can opt out. Anonymous reports may be spoofed, so treat these as directional counts, not billing or security metrics.</p>
+                <div class="usage-grid">
+                    <article class="usage-stat"><span>Total installs</span><strong id="usage-total">—</strong></article>
+                    <article class="usage-stat"><span>Active in 30 days</span><strong id="usage-active">—</strong></article>
+                    <article class="usage-stat"><span>New in 30 days</span><strong id="usage-new">—</strong></article>
+                </div>
+                <h3>Active installs by version</h3>
+                <div id="usage-versions" class="item-list"></div>
+                <p id="usage-status" class="hint" role="status"></p>
+            </section>
 
             <section id="requests-card" class="card" hidden>
                 <h2>Staff access requests</h2>
@@ -80,10 +114,24 @@
                 <h2>Release history</h2>
                 <div id="releases-list" class="item-list"></div>
             </section>
+            <section id="feedback-card" class="card">
+                <h2>Feedback and feature requests</h2>
+                <div id="feedback-list" class="item-list"></div>
+            </section>
             <section id="staff-card" class="card" hidden>
                 <h2>Approved staff</h2>
                 <div id="staff-list" class="item-list"></div>
             </section>
+        </section>
+
+        <section class="card support-card">
+            <h2>Help and support</h2>
+            <p>Read the setup guide, report a problem, or browse project updates.</p>
+            <div class="button-row">
+                <a class="button" href="https://github.com/auctiongrnd/GRND-Complaint-Tools/blob/main/README.md" target="_blank" rel="noopener noreferrer">Setup guide</a>
+                <a class="button secondary" href="https://github.com/auctiongrnd/GRND-Complaint-Tools/issues" target="_blank" rel="noopener noreferrer">Support & ideas</a>
+                <a class="button secondary" href="https://github.com/auctiongrnd/GRND-Complaint-Tools" target="_blank" rel="noopener noreferrer">Project page</a>
+            </div>
         </section>
     </main>
 
