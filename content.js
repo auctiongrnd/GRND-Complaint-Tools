@@ -21,10 +21,108 @@
     const LS_SECTIONS = "grnd_custom_sections";
     const LS_REPORTS = "grnd_report_history";
     const LS_DISMISSED_ANNOUNCEMENTS = "grnd_dismissed_announcements";
+    const USAGE_OPT_OUT = "grnd_usage_opt_out";
+    const USAGE_INSTALL_ID = "grnd_usage_install_id";
+    const USAGE_LAST_SENT = "grnd_usage_last_sent";
+    const USAGE_SEND_INTERVAL = 24 * 60 * 60 * 1000;
     const SUPABASE_URL = window.GRND_CONFIG && window.GRND_CONFIG.supabaseUrl;
     const SUPABASE_ANON_KEY = window.GRND_CONFIG && window.GRND_CONFIG.supabaseAnonKey;
     let extensionAnnouncements = [];
     let extensionReleases = [];
+
+    function getExtensionStorage(keys) {
+        return new Promise((resolve, reject) => {
+            if (typeof chrome === "undefined" || !chrome.storage || !chrome.storage.local) {
+                reject(new Error("Extension storage is unavailable. Reload the extension and try again."));
+                return;
+            }
+            chrome.storage.local.get(keys, result => {
+                const error = chrome.runtime.lastError;
+                if (error) reject(new Error(error.message));
+                else resolve(result);
+            });
+        });
+    }
+
+    function setExtensionStorage(values) {
+        return new Promise((resolve, reject) => {
+            if (typeof chrome === "undefined" || !chrome.storage || !chrome.storage.local) {
+                reject(new Error("Extension storage is unavailable. Reload the extension and try again."));
+                return;
+            }
+            chrome.storage.local.set(values, () => {
+                const error = chrome.runtime.lastError;
+                if (error) reject(new Error(error.message));
+                else resolve();
+            });
+        });
+    }
+
+    function createUsageInstallId() {
+        const bytes = new Uint8Array(16);
+        window.crypto.getRandomValues(bytes);
+        bytes[6] = (bytes[6] & 0x0f) | 0x40;
+        bytes[8] = (bytes[8] & 0x3f) | 0x80;
+        const hex = Array.from(bytes, value => value.toString(16).padStart(2, "0")).join("");
+        return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+    }
+
+    async function recordExtensionUsage() {
+        if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return;
+        const settings = await getExtensionStorage([USAGE_OPT_OUT, USAGE_INSTALL_ID, USAGE_LAST_SENT]);
+        if (settings[USAGE_OPT_OUT] === true) return;
+
+        const now = Date.now();
+        if (now - Number(settings[USAGE_LAST_SENT] || 0) < USAGE_SEND_INTERVAL) return;
+        const installId = settings[USAGE_INSTALL_ID] || createUsageInstallId();
+        if (!settings[USAGE_INSTALL_ID]) {
+            await setExtensionStorage({ [USAGE_INSTALL_ID]: installId });
+        }
+
+        const version = chrome.runtime.getManifest().version;
+        const response = await fetch(`${SUPABASE_URL}/rest/v1/rpc/record_extension_usage`, {
+            method: "POST",
+            headers: {
+                apikey: SUPABASE_ANON_KEY,
+                Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({ p_install_id: installId, p_version: version })
+        });
+        if (!response.ok) {
+            throw new Error(`Usage report failed (${response.status}): ${await response.text()}`);
+        }
+        await setExtensionStorage({ [USAGE_LAST_SENT]: now });
+    }
+
+    async function setUsageAnalyticsEnabled(enabled) {
+        await setExtensionStorage({
+            [USAGE_OPT_OUT]: !enabled,
+            [USAGE_LAST_SENT]: 0
+        });
+        if (enabled) {
+            await recordExtensionUsage();
+            showStatus("grnd-usage-status", "Anonymous usage sharing is on.", "#16a34a");
+            return;
+        }
+
+        const settings = await getExtensionStorage(USAGE_INSTALL_ID);
+        if (settings[USAGE_INSTALL_ID] && SUPABASE_URL && SUPABASE_ANON_KEY) {
+            const response = await fetch(`${SUPABASE_URL}/rest/v1/rpc/opt_out_extension_usage`, {
+                method: "POST",
+                headers: {
+                    apikey: SUPABASE_ANON_KEY,
+                    Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({ p_install_id: settings[USAGE_INSTALL_ID] })
+            });
+            if (!response.ok) {
+                throw new Error(`Could not delete the previous usage record (${response.status}).`);
+            }
+        }
+        showStatus("grnd-usage-status", "Usage sharing is off; your stored install count was removed.", "#16a34a");
+    }
 
     function getReportHistory() {
         const raw = localStorage.getItem(LS_REPORTS);
@@ -1320,6 +1418,7 @@
                 <h3>Release history</h3>
                 <div id="grnd-updates-releases"></div>
                 <p class="grnd-updates-help">Choose a version to download its ZIP. Install it manually using your browser's extension developer mode.</p>
+                <p class="grnd-updates-help"><a href="https://auctiongrnd.github.io/GRND-Complaint-Tools/" target="_blank" rel="noopener noreferrer">Help, support, and feedback</a></p>
             </div>`;
         document.body.appendChild(overlay);
         document.getElementById("grnd-updates-close").addEventListener("click", closeUpdatesModal);
@@ -1436,6 +1535,18 @@
                 </div>
                 <div id="grnd-backup-status" class="grnd-settings-status"></div>
             </div>
+
+            <div class="grnd-settings-divider"></div>
+
+            <div class="grnd-settings-section">
+                <div class="grnd-settings-section-title">Privacy & Usage</div>
+                <label class="grnd-analytics-label">
+                    <input type="checkbox" id="grnd-usage-enabled" checked>
+                    Share anonymous usage counts
+                </label>
+                <p class="grnd-updates-help">When enabled, the extension sends a random installation ID and version at most once a day. It does not send report history, admin name, or complaint content. You can turn this off any time; your stored install count will be deleted.</p>
+                <div id="grnd-usage-status" class="grnd-settings-status" role="status"></div>
+            </div>
         </div>`;
         document.body.appendChild(overlay);
 
@@ -1467,6 +1578,25 @@
         document.getElementById("grnd-section-delete").addEventListener("click", deleteCustomSection);
         document.getElementById("grnd-backup-save").addEventListener("click", downloadBackup);
         document.getElementById("grnd-backup-upload").addEventListener("change", uploadBackup);
+        const usageToggle = document.getElementById("grnd-usage-enabled");
+        getExtensionStorage(USAGE_OPT_OUT).then(settings => {
+            usageToggle.checked = settings[USAGE_OPT_OUT] !== true;
+        }).catch(error => {
+            usageToggle.checked = false;
+            usageToggle.disabled = true;
+            showStatus("grnd-usage-status", error.message, "#dc2626");
+        });
+        usageToggle.addEventListener("change", async () => {
+            usageToggle.disabled = true;
+            try {
+                await setUsageAnalyticsEnabled(usageToggle.checked);
+            } catch (error) {
+                console.error("Could not update anonymous usage preference:", error);
+                showStatus("grnd-usage-status", error.message, "#dc2626");
+            } finally {
+                usageToggle.disabled = false;
+            }
+        });
 
         syncCustomSectionData();
         populateSectionSelects();
@@ -1774,6 +1904,8 @@
             .grnd-announcement-dismiss { flex: 0 0 auto; border: 0; border-radius: 4px; padding: 5px 8px; background: #dbeafe; color: #1d4ed8; cursor: pointer; font-size: 11px; }
             .grnd-announcement-view { margin-top: 8px; border: 0; border-radius: 4px; padding: 5px 8px; background: #2563eb; color: #fff; cursor: pointer; font-size: 11px; }
             .grnd-updates-help { color: #64748b; font-size: 12px; }
+            .grnd-analytics-label { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: #334155; }
+            .grnd-analytics-label input { width: auto; }
         `;
         document.head.appendChild(style);
     }
@@ -1827,6 +1959,7 @@
         renderSectionButtons();
         renderTemplateButtons();
         loadExtensionUpdates();
+        recordExtensionUsage().catch(error => console.warn("Could not record anonymous extension usage:", error));
 
         setTimeout(updateBodyPadding, 100);
     }
