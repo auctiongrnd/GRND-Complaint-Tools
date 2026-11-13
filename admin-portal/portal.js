@@ -11,6 +11,7 @@
     let client;
     let currentUser;
     let currentRole;
+    let authMode = "signin";
 
     function setStatus(message, isError) {
         statusEl.textContent = message || "";
@@ -167,14 +168,36 @@
         const email = document.getElementById("auth-email").value.trim();
         const password = document.getElementById("auth-password").value;
         if (password.length < 8) throw new Error("Use a password with at least 8 characters.");
-        const { data, error } = await client.auth.signUp({ email, password });
+        const redirectUrl = new URL(window.location.href);
+        redirectUrl.hash = "";
+        redirectUrl.search = "";
+        const { data, error } = await client.auth.signUp({
+            email,
+            password,
+            options: { emailRedirectTo: redirectUrl.toString() }
+        });
         if (error) throw error;
         if (!data.session) {
-            setStatus("Check your email to confirm the account, then sign in and request staff access.");
+            setAuthMode("signin");
+            setStatus("Account created. Check your email and open the confirmation link, then sign in and request staff access.");
         } else {
-            setStatus("Account created. Request staff access below.");
             await loadSignedInView(data.user);
+            setAuthMode("signin");
+            setStatus("Account created. Request staff access below.");
         }
+    }
+
+    function setAuthMode(mode) {
+        authMode = mode;
+        const signingUp = mode === "signup";
+        document.getElementById("auth-heading").textContent = signingUp ? "Create staff account" : "Staff sign in";
+        document.getElementById("auth-submit").textContent = signingUp ? "Create account" : "Sign in";
+        document.getElementById("auth-mode-toggle").textContent = signingUp ? "Back to sign in" : "Create account";
+        document.getElementById("auth-password").autocomplete = signingUp ? "new-password" : "current-password";
+        document.getElementById("auth-hint").textContent = signingUp
+            ? "Use a valid email and a password with at least 8 characters. Confirm your email before signing in; the owner must approve staff access."
+            : "Only approved staff can publish. New accounts must confirm their email and be approved by the owner.";
+        setStatus("");
     }
 
     async function requestAccess() {
@@ -312,9 +335,11 @@
 
         document.getElementById("auth-form").addEventListener("submit", event => {
             event.preventDefault();
-            run(signIn);
+            run(() => authMode === "signup" ? signUp() : signIn());
         });
-        document.getElementById("sign-up").addEventListener("click", () => run(signUp));
+        document.getElementById("auth-mode-toggle").addEventListener("click", () => {
+            setAuthMode(authMode === "signup" ? "signin" : "signup");
+        });
         document.getElementById("request-access").addEventListener("click", () => run(requestAccess));
         document.getElementById("announcement-form").addEventListener("submit", event => run(() => publishAnnouncement(event)));
         document.getElementById("release-form").addEventListener("submit", event => run(() => publishRelease(event)));

@@ -20,16 +20,16 @@
         <div id="status" class="status" role="status" aria-live="polite"></div>
 
         <section id="auth-view" class="card">
-            <h2>Staff sign in</h2>
+            <h2 id="auth-heading">Staff sign in</h2>
             <form id="auth-form">
                 <label>Email <input id="auth-email" type="email" autocomplete="email" required></label>
                 <label>Password <input id="auth-password" type="password" autocomplete="current-password" minlength="8" required></label>
                 <div class="button-row">
-                    <button class="button" type="submit">Sign in</button>
-                    <button id="sign-up" class="button secondary" type="button">Create account</button>
+                    <button id="auth-submit" class="button" type="submit">Sign in</button>
+                    <button id="auth-mode-toggle" class="button secondary" type="button">Create account</button>
                 </div>
             </form>
-            <p class="hint">Only approved staff can publish. New accounts must be approved by the owner.</p>
+            <p id="auth-hint" class="hint">Only approved staff can publish. New accounts must confirm their email and be approved by the owner.</p>
         </section>
 
         <section id="request-view" class="card" hidden>
