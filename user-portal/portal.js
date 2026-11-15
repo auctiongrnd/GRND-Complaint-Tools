@@ -33,6 +33,11 @@
         authView.hidden = false;
         userDashboard.hidden = true;
         signOutButton.hidden = true;
+        document.getElementById("account-access-status").textContent = "Sign in to view account-specific features.";
+        document.getElementById("account-access-list").innerHTML = "";
+        document.getElementById("account-access-signin").hidden = false;
+        document.getElementById("account-access-plan").textContent = "Account-based";
+        document.getElementById("account-id").textContent = "";
     }
 
     function showDashboard(user) {
@@ -42,6 +47,8 @@
         signOutButton.hidden = false;
         document.getElementById("welcome").textContent = `Welcome, ${user.email}`;
         document.getElementById("account-email").textContent = user.email;
+        document.getElementById("account-id").textContent = user.id;
+        document.getElementById("account-access-signin").hidden = true;
         showTab("overview");
     }
 
@@ -156,6 +163,38 @@
         setStatus("Updates refreshed.");
     }
 
+    async function loadMyExtensionFeatures() {
+        const status = document.getElementById("account-access-status");
+        const list = document.getElementById("account-access-list");
+        const { data, error } = await client.rpc("get_my_extension_entitlements");
+        if (error) {
+            console.error("Could not load account feature access:", error);
+            status.textContent = "Feature access is temporarily unavailable. The portal owner may need to apply the latest database schema.";
+            status.classList.add("error");
+            return;
+        }
+
+        status.classList.remove("error");
+        const features = data && data.features && typeof data.features === "object" && !Array.isArray(data.features)
+            ? Object.entries(data.features).filter(([, enabled]) => typeof enabled === "boolean")
+            : [];
+        document.getElementById("account-access-plan").textContent = features.some(([, enabled]) => enabled)
+            ? "Features assigned"
+            : "Core access";
+        status.textContent = features.length
+            ? "These account-specific feature flags are linked to your portal account."
+            : "No account-specific premium features are assigned. Your extension's core tools remain available.";
+        list.innerHTML = features.length ? features.map(([key, enabled]) => `
+            <article class="item account-feature-item">
+                <div>
+                    <h3>${escapeHtml(key.replace(/_/g, " "))}</h3>
+                    <div class="item-meta">${enabled ? "Available for your account" : "Currently disabled for your account"}</div>
+                </div>
+                <span class="entitlement-state ${enabled ? "is-enabled" : "is-disabled"}">${enabled ? "Enabled" : "Disabled"}</span>
+            </article>
+        `).join("") : "";
+    }
+
     async function loadMyFeedback() {
         const list = document.getElementById("my-feedback-list");
         const { data, error } = await client
@@ -167,6 +206,7 @@
             list.innerHTML = `<p class="empty">Feedback history could not be loaded. ${escapeHtml(error.message)}</p>`;
             throw error;
         }
+
         const feedback = data || [];
         let activityByFeedback = new Map();
         let activityUnavailable = "";
@@ -278,6 +318,7 @@
         }
         showDashboard(user);
         await loadMyFeedback();
+        await loadMyExtensionFeatures();
         await loadFeatureRequests();
     }
 

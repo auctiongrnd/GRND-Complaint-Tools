@@ -77,11 +77,13 @@
 
             <section id="tab-overview" class="user-tab-panel">
                 <div class="card">
-                    <h2>Your portal</h2>
-                    <p>Published announcements and downloads are open to everyone. Sign in is only needed for feedback and account tools.</p>
+                    <p class="eyebrow">YOUR WORKSPACE</p>
+                    <h2>Your portal, at a glance</h2>
+                    <p>Keep up with releases, get updates on your requests, and manage account-based feature access.</p>
                     <div class="button-row">
                         <button class="button" type="button" data-open-tab="feedback">Send feedback</button>
                         <button class="button secondary" type="button" data-open-tab="account">Manage account</button>
+                        <a class="button secondary" href="#account-access">View feature access</a>
                     </div>
                 </div>
             </section>
@@ -121,6 +123,8 @@
                     <section class="card">
                         <h2>Account details</h2>
                         <p id="account-email" class="account-email"></p>
+                        <p class="hint">Account ID for staff to assign features:</p>
+                        <code id="account-id" class="account-id"></code>
                         <p class="hint">Your account is separate from staff publishing permissions.</p>
                         <button id="request-staff-access" class="button secondary" type="button">Request staff access</button>
                         <p id="staff-request-status" class="hint" role="status"></p>
@@ -135,6 +139,20 @@
                     </section>
                 </div>
             </section>
+        </section>
+
+        <section id="account-access" class="card user-access-card">
+            <div class="card-heading-row">
+                <div>
+                    <p class="eyebrow">ACCOUNT ENTITLEMENTS</p>
+                    <h2>Your feature access</h2>
+                </div>
+                <span id="account-access-plan" class="access-plan">Account-based</span>
+            </div>
+            <p class="hint">Your portal account can be linked in the extension's Settings. Only features explicitly marked as premium use these access flags; core tools remain available.</p>
+            <p id="account-access-status" class="hint" role="status">Sign in to view account-specific features.</p>
+            <div id="account-access-list" class="item-list"></div>
+            <a id="account-access-signin" class="button secondary" href="#auth-view">Sign in to your account</a>
         </section>
 
         <section id="updates" class="card updates-card">

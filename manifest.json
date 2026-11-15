@@ -1,14 +1,14 @@
 {
   "manifest_version": 3,
   "name": "GRND Complaint Tools",
-  "version": "1.5.1",
-  "description": "Custom verdict templates, favorites, dark theme, searchable report history, and release updates for GRND admins",
+  "version": "1.6.0",
+  "description": "Complaint tools with synced player directories, opt-in admin analytics, account-linked feature access, and extension updates",
 
   "content_scripts": [
     {
       "matches": [
-        "https://grnd.gg/admin/complaints/*",
-        "https://eu.grnd.gg/admin/complaints/*"
+        "https://grnd.gg/admin/*",
+        "https://eu.grnd.gg/admin/*"
       ],
       "js": ["config.js", "content.js"],
       "run_at": "document_idle"

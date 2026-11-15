@@ -4,8 +4,8 @@
 // @version      2026.4
 // @description  PC-friendly section-based template buttons with local report history
 // @author       Sofi_Ahamed
-// @match        https://grnd.gg/admin/complaints/*
-// @match        https://eu.grnd.gg/admin/complaints/*
+// @match        https://grnd.gg/admin/*
+// @match        https://eu.grnd.gg/admin/*
 // @grant        none
 // ==/UserScript==
 
@@ -23,10 +23,13 @@
     const LS_DARK_THEME = "grnd_dark_theme";
     const FAVORITES_SECTION_NAME = "★ Favorites";
     const LS_REPORTS = "grnd_report_history";
+    const LS_PLAYER_DIRECTORIES = "grnd_player_directories";
     const LS_DISMISSED_ANNOUNCEMENTS = "grnd_dismissed_announcements";
     const USAGE_OPT_OUT = "grnd_usage_opt_out";
     const USAGE_INSTALL_ID = "grnd_usage_install_id";
     const USAGE_LAST_SENT = "grnd_usage_last_sent";
+    const USAGE_SHARE_ADMIN_NAME = "grnd_usage_share_admin_name";
+    const EXTENSION_ACCOUNT_SESSION = "grnd_account_session";
     const USAGE_SEND_INTERVAL = 24 * 60 * 60 * 1000;
     const SUPABASE_URL = window.GRND_CONFIG && window.GRND_CONFIG.supabaseUrl;
     const SUPABASE_ANON_KEY = window.GRND_CONFIG && window.GRND_CONFIG.supabaseAnonKey;
@@ -34,6 +37,7 @@
     let extensionReleases = [];
     let historyVisibleReports = [];
     let activeHistoryRange = "week";
+    let extensionFeatureEntitlements = {};
 
     function getExtensionStorage(keys) {
         return new Promise((resolve, reject) => {
@@ -63,6 +67,116 @@
         });
     }
 
+    function normalizeAuthSession(session) {
+        if (!session || !session.access_token || !session.refresh_token || !session.user || !session.user.id) {
+            throw new Error("The account service returned an invalid sign-in response.");
+        }
+        return {
+            access_token: session.access_token,
+            refresh_token: session.refresh_token,
+            expires_at_ms: Date.now() + Number(session.expires_in || 3600) * 1000,
+            user_id: session.user.id,
+            email: session.user.email || ""
+        };
+    }
+
+    async function getExtensionAccountSession() {
+        const stored = await getExtensionStorage(EXTENSION_ACCOUNT_SESSION);
+        const session = stored[EXTENSION_ACCOUNT_SESSION];
+        if (!session) return null;
+        if (session.access_token && Number(session.expires_at_ms) > Date.now() + 60000) return session;
+        if (!session.refresh_token) {
+            await setExtensionStorage({ [EXTENSION_ACCOUNT_SESSION]: null });
+            throw new Error("Your extension account session expired. Sign in again.");
+        }
+
+        const response = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
+            method: "POST",
+            headers: {
+                apikey: SUPABASE_ANON_KEY,
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({ refresh_token: session.refresh_token })
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            await setExtensionStorage({ [EXTENSION_ACCOUNT_SESSION]: null });
+            extensionFeatureEntitlements = {};
+            throw new Error(result.msg || result.message || "Your extension account session expired. Sign in again.");
+        }
+
+        const refreshed = normalizeAuthSession(result);
+        await setExtensionStorage({ [EXTENSION_ACCOUNT_SESSION]: refreshed });
+        return refreshed;
+    }
+
+    async function signInExtensionAccount(email, password) {
+        if (!SUPABASE_URL || !SUPABASE_ANON_KEY) throw new Error("Account sign-in is unavailable because the portal is not configured.");
+        const response = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
+            method: "POST",
+            headers: {
+                apikey: SUPABASE_ANON_KEY,
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({ email, password })
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(result.msg || result.message || result.error_description || "Could not sign in to your portal account.");
+
+        const session = normalizeAuthSession(result);
+        await setExtensionStorage({ [EXTENSION_ACCOUNT_SESSION]: session });
+        await refreshExtensionFeatureEntitlements();
+        await recordExtensionUsage(true);
+        return session;
+    }
+
+    async function signOutExtensionAccount() {
+        await setExtensionStorage({ [EXTENSION_ACCOUNT_SESSION]: null });
+        extensionFeatureEntitlements = {};
+        await recordExtensionUsage(true);
+    }
+
+    async function callExtensionRpc(name, body) {
+        const session = await getExtensionAccountSession();
+        const response = await fetch(`${SUPABASE_URL}/rest/v1/rpc/${encodeURIComponent(name)}`, {
+            method: "POST",
+            headers: {
+                apikey: SUPABASE_ANON_KEY,
+                Authorization: `Bearer ${session ? session.access_token : SUPABASE_ANON_KEY}`,
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify(body)
+        });
+        const responseText = await response.text();
+        if (!response.ok) throw new Error(`${name} failed (${response.status}): ${responseText}`);
+        return responseText ? JSON.parse(responseText) : null;
+    }
+
+    async function refreshExtensionFeatureEntitlements() {
+        const session = await getExtensionAccountSession();
+        if (!session) {
+            extensionFeatureEntitlements = {};
+            return extensionFeatureEntitlements;
+        }
+        const result = await callExtensionRpc("get_my_extension_entitlements", {});
+        if (!result || typeof result.features !== "object" || Array.isArray(result.features)) {
+            throw new Error("Feature access returned an invalid response.");
+        }
+        extensionFeatureEntitlements = Object.fromEntries(
+            Object.entries(result.features).filter(([, enabled]) => typeof enabled === "boolean")
+        );
+        return extensionFeatureEntitlements;
+    }
+
+    function hasExtensionFeature(featureKey) {
+        return extensionFeatureEntitlements[featureKey] === true;
+    }
+
+    async function isExtensionFeatureEnabled(featureKey) {
+        await refreshExtensionFeatureEntitlements();
+        return hasExtensionFeature(featureKey);
+    }
+
     function createUsageInstallId() {
         const bytes = new Uint8Array(16);
         window.crypto.getRandomValues(bytes);
@@ -72,39 +186,40 @@
         return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
     }
 
-    async function recordExtensionUsage() {
+    async function recordExtensionUsage(force = false) {
         if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return;
-        const settings = await getExtensionStorage([USAGE_OPT_OUT, USAGE_INSTALL_ID, USAGE_LAST_SENT]);
+        const settings = await getExtensionStorage([
+            USAGE_OPT_OUT,
+            USAGE_INSTALL_ID,
+            USAGE_LAST_SENT,
+            USAGE_SHARE_ADMIN_NAME
+        ]);
         if (settings[USAGE_OPT_OUT] === true) return;
 
         const now = Date.now();
-        if (now - Number(settings[USAGE_LAST_SENT] || 0) < USAGE_SEND_INTERVAL) return;
+        if (!force && now - Number(settings[USAGE_LAST_SENT] || 0) < USAGE_SEND_INTERVAL) return;
         const installId = settings[USAGE_INSTALL_ID] || createUsageInstallId();
         if (!settings[USAGE_INSTALL_ID]) {
             await setExtensionStorage({ [USAGE_INSTALL_ID]: installId });
         }
 
         const version = chrome.runtime.getManifest().version;
-        const response = await fetch(`${SUPABASE_URL}/rest/v1/rpc/record_extension_usage`, {
-            method: "POST",
-            headers: {
-                apikey: SUPABASE_ANON_KEY,
-                Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify({ p_install_id: installId, p_version: version })
+        const adminName = settings[USAGE_SHARE_ADMIN_NAME] === true ? getAdminName().trim() : "";
+        await callExtensionRpc("record_extension_usage", {
+            p_install_id: installId,
+            p_version: version,
+            p_admin_name: adminName || null
         });
-        if (!response.ok) {
-            throw new Error(`Usage report failed (${response.status}): ${await response.text()}`);
-        }
         await setExtensionStorage({ [USAGE_LAST_SENT]: now });
     }
 
     async function setUsageAnalyticsEnabled(enabled) {
-        await setExtensionStorage({
+        const settingsToSave = {
             [USAGE_OPT_OUT]: !enabled,
             [USAGE_LAST_SENT]: 0
-        });
+        };
+        if (!enabled) settingsToSave[USAGE_SHARE_ADMIN_NAME] = false;
+        await setExtensionStorage(settingsToSave);
         if (enabled) {
             await recordExtensionUsage();
             showStatus("grnd-usage-status", "Anonymous usage sharing is on.", "#16a34a");
@@ -127,6 +242,54 @@
             }
         }
         showStatus("grnd-usage-status", "Usage sharing is off; your stored install count was removed.", "#16a34a");
+    }
+
+    async function setAdminNameSharingEnabled(enabled) {
+        if (enabled && !getAdminName().trim()) {
+            throw new Error("Save your admin name in Profile before sharing it.");
+        }
+        const settings = await getExtensionStorage(USAGE_OPT_OUT);
+        if (enabled && settings[USAGE_OPT_OUT] === true) {
+            throw new Error("Turn on anonymous usage counts before sharing your admin name.");
+        }
+        await setExtensionStorage({
+            [USAGE_SHARE_ADMIN_NAME]: enabled,
+            [USAGE_LAST_SENT]: 0
+        });
+        await recordExtensionUsage(true);
+        showStatus(
+            "grnd-usage-status",
+            enabled ? "Admin name sharing is on. The owner can see your saved name." : "Admin name sharing is off.",
+            "#16a34a"
+        );
+    }
+
+    async function loadExtensionAccountSettings() {
+        const form = document.getElementById("grnd-extension-account-form");
+        const current = document.getElementById("grnd-extension-account-current");
+        const status = document.getElementById("grnd-extension-account-status");
+        status.style.color = "";
+        try {
+            const session = await getExtensionAccountSession();
+            form.hidden = Boolean(session);
+            current.hidden = !session;
+            if (!session) {
+                status.textContent = "This installation is not linked to a portal account.";
+                return;
+            }
+
+            await refreshExtensionFeatureEntitlements();
+            document.getElementById("grnd-extension-account-current-email").textContent = session.email;
+            const enabledFeatures = Object.keys(extensionFeatureEntitlements).filter(key => extensionFeatureEntitlements[key]);
+            status.textContent = enabledFeatures.length
+                ? `Account linked. ${enabledFeatures.length} account feature entitlement(s) are active.`
+                : "Account linked. No account-specific premium features are enabled yet; core tools remain available.";
+        } catch (error) {
+            form.hidden = false;
+            current.hidden = true;
+            status.textContent = `Could not load account access: ${error.message}`;
+            status.style.color = "#dc2626";
+        }
     }
 
     function getReportHistory() {
@@ -1029,7 +1192,9 @@
 
     function cleanName(element) {
         if (!element) return "Unknown";
-        let rawText = element.textContent || "";
+        const cleanElement = element.cloneNode(true);
+        cleanElement.querySelectorAll(".grnd-directory-badge").forEach(badge => badge.remove());
+        let rawText = cleanElement.textContent || "";
         rawText = rawText.replace(/Жалоба от/gi, "").replace(/Жалоба на/gi, "")
             .replace(/Complaint from/gi, "").replace(/Complaint about/gi, "")
             .replace(/:/g, "").trim();
@@ -1053,9 +1218,371 @@
         return {
             complainFrom: cleanName(cFrom),
             complainOn: cleanName(cOn) !== "Unknown" ? cleanName(cOn) : "",
+            complainFromElement: cFrom,
+            complainOnElement: cOn,
             complainNumber,
             adminName: adminName || "V.Varma"
         };
+    }
+
+    function normalizePlayerName(name) {
+        return String(name || "").trim().replace(/\s+/g, " ").toLocaleLowerCase();
+    }
+
+    function getDirectoryTable() {
+        for (const table of document.querySelectorAll("table")) {
+            const headerRow = table.querySelector("thead tr:last-child") || table.querySelector("tr");
+            if (!headerRow) continue;
+
+            const headers = Array.from(headerRow.cells).map(cell => cell.textContent.trim().toLocaleLowerCase());
+            const role = headers.some(header => header.includes("admin level"))
+                ? "administrator"
+                : headers.some(header => /^(fraction|faction)$/.test(header))
+                    ? "leader"
+                    : "";
+            const nameIndex = headers.findIndex(header => header === "name" || header.includes("player name"));
+            if (!role || nameIndex < 0) continue;
+
+            const rows = Array.from(table.querySelectorAll("tbody tr"));
+            const sourceRows = rows.length ? rows : Array.from(table.querySelectorAll("tr")).slice(1);
+            return { table, headers, role, nameIndex, rows: sourceRows };
+        }
+        return null;
+    }
+
+    function readDirectoryRows(directory) {
+        const findColumn = matcher => directory.headers.findIndex(header => matcher.test(header));
+        const regionIndex = findColumn(/region/);
+        const serverIndex = findColumn(/server/);
+        const levelIndex = findColumn(/admin level/);
+        const factionIndex = findColumn(/^(fraction|faction)$/);
+
+        return directory.rows.map(row => {
+            const cells = Array.from(row.cells);
+            const name = cells[directory.nameIndex] && cells[directory.nameIndex].textContent.trim();
+            if (!name) return null;
+            return {
+                name,
+                level: levelIndex >= 0 && cells[levelIndex] ? cells[levelIndex].textContent.trim() : "",
+                faction: factionIndex >= 0 && cells[factionIndex] ? cells[factionIndex].textContent.trim() : "",
+                region: regionIndex >= 0 && cells[regionIndex] ? cells[regionIndex].textContent.trim() : "",
+                server: serverIndex >= 0 && cells[serverIndex] ? cells[serverIndex].textContent.trim() : ""
+            };
+        }).filter(Boolean);
+    }
+
+    function createDirectorySyncControl() {
+        if (document.getElementById("grnd-directory-sync")) return;
+        const control = document.createElement("section");
+        control.id = "grnd-directory-sync";
+        control.setAttribute("role", "region");
+        control.setAttribute("aria-label", "GRND directory sync");
+        control.innerHTML = `
+            <strong id="grnd-directory-title"></strong>
+            <button id="grnd-directory-sync-button" type="button"></button>
+            <span id="grnd-directory-status" role="status" aria-live="polite"></span>`;
+        Object.assign(control.style, {
+            position: "fixed",
+            right: "16px",
+            bottom: "16px",
+            zIndex: "11000",
+            display: "grid",
+            gap: "8px",
+            maxWidth: "280px",
+            padding: "14px",
+            border: "1px solid #cbd5e1",
+            borderRadius: "10px",
+            background: "#ffffff",
+            color: "#1e293b",
+            boxShadow: "0 8px 24px rgba(15, 23, 42, .2)",
+            font: "13px system-ui, sans-serif"
+        });
+        const button = control.querySelector("button");
+        Object.assign(button.style, {
+            padding: "8px 12px",
+            border: "0",
+            borderRadius: "6px",
+            background: "#2563eb",
+            color: "#ffffff",
+            fontWeight: "600",
+            cursor: "pointer"
+        });
+
+        const directory = getDirectoryTable();
+        const title = directory.role === "administrator" ? "Administrator list" : "Faction leader list";
+        control.querySelector("strong").textContent = title;
+        button.textContent = `Sync ${title.toLocaleLowerCase()}`;
+        button.addEventListener("click", async () => {
+            const currentDirectory = getDirectoryTable();
+            const status = control.querySelector("#grnd-directory-status");
+            if (!currentDirectory || currentDirectory.role !== directory.role) {
+                status.textContent = "The directory table is no longer available. Reload the page and try again.";
+                return;
+            }
+
+            const entries = readDirectoryRows(currentDirectory);
+            if (!entries.length) {
+                status.textContent = "No players were found. The saved list was not changed.";
+                return;
+            }
+
+            button.disabled = true;
+            status.textContent = "Syncing list…";
+            try {
+                const stored = await getExtensionStorage(LS_PLAYER_DIRECTORIES);
+                const directories = stored[LS_PLAYER_DIRECTORIES] || {};
+                directories[currentDirectory.role] = {
+                    entries,
+                    syncedAt: new Date().toISOString(),
+                    origin: window.location.origin
+                };
+                await setExtensionStorage({ [LS_PLAYER_DIRECTORIES]: directories });
+                status.textContent = `Synced ${entries.length} ${currentDirectory.role === "administrator" ? "administrators" : "leaders"}.`;
+            } catch (error) {
+                status.textContent = `Sync failed: ${error.message}`;
+                console.error("Could not sync GRND player directory:", error);
+            } finally {
+                button.disabled = false;
+            }
+        });
+        document.body.appendChild(control);
+    }
+
+    function waitForDirectoryPage() {
+        const startedAt = Date.now();
+        const check = () => {
+            if (document.getElementById("grnd-directory-sync")) return;
+            if (getDirectoryTable()) {
+                createDirectorySyncControl();
+                return;
+            }
+            if (Date.now() - startedAt < 60000) window.setTimeout(check, 500);
+        };
+        check();
+    }
+
+    function linkifyComplaintUrls(root) {
+        if (!root) return;
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+            acceptNode(node) {
+                const parent = node.parentElement;
+                if (!parent || !/https:\/\/\S+/i.test(node.nodeValue || "")) return NodeFilter.FILTER_REJECT;
+                if (parent.closest("a, button, input, textarea, select, option, script, style, #grnd-floating-panel, #grnd-directory-sync")) {
+                    return NodeFilter.FILTER_REJECT;
+                }
+                return NodeFilter.FILTER_ACCEPT;
+            }
+        });
+        const textNodes = [];
+        while (walker.nextNode()) textNodes.push(walker.currentNode);
+
+        textNodes.forEach(node => {
+            const text = node.nodeValue || "";
+            const pattern = /https:\/\/[^\s<>"'`]+/gi;
+            let match;
+            let lastIndex = 0;
+            const fragment = document.createDocumentFragment();
+            let changed = false;
+            while ((match = pattern.exec(text))) {
+                let rawUrl = match[0];
+                let suffix = "";
+                while (/[.,!?;:)\]}]$/.test(rawUrl)) {
+                    suffix = rawUrl.slice(-1) + suffix;
+                    rawUrl = rawUrl.slice(0, -1);
+                }
+                let url;
+                try {
+                    url = new URL(rawUrl);
+                } catch (_) {
+                    continue;
+                }
+                if (url.protocol !== "https:") continue;
+                fragment.appendChild(document.createTextNode(text.slice(lastIndex, match.index)));
+                const link = document.createElement("a");
+                link.href = url.href;
+                link.textContent = rawUrl;
+                link.target = "_blank";
+                link.rel = "noopener noreferrer";
+                link.className = "grnd-complaint-link";
+                fragment.appendChild(link);
+                if (suffix) fragment.appendChild(document.createTextNode(suffix));
+                lastIndex = match.index + match[0].length;
+                changed = true;
+            }
+            if (changed) {
+                fragment.appendChild(document.createTextNode(text.slice(lastIndex)));
+                node.parentNode.replaceChild(fragment, node);
+            }
+        });
+    }
+
+    function buildDirectoryRoleMap(directories) {
+        const rolesByName = new Map();
+        ["administrator", "leader"].forEach(role => {
+            const directory = directories[role];
+            (directory && Array.isArray(directory.entries) ? directory.entries : []).forEach(entry => {
+                const key = normalizePlayerName(entry.name);
+                if (!key) return;
+                if (!rolesByName.has(key)) rolesByName.set(key, []);
+                const roleDetails = { role, level: entry.level, faction: entry.faction };
+                const alreadyListed = rolesByName.get(key).some(item =>
+                    item.role === roleDetails.role && item.level === roleDetails.level && item.faction === roleDetails.faction
+                );
+                if (!alreadyListed) rolesByName.get(key).push(roleDetails);
+            });
+        });
+        return rolesByName;
+    }
+
+    function applyComplaintDirectoryNames(rolesByName) {
+        const data = getPageData();
+        [
+            { element: data.complainOnElement, name: data.complainOn },
+            { element: data.complainFromElement, name: data.complainFrom }
+        ].forEach(({ element, name }) => {
+            if (!element) return;
+            const roles = rolesByName.get(normalizePlayerName(name)) || [];
+            const badges = Array.from(element.querySelectorAll(".grnd-directory-badge"));
+            const badgeLabels = roles.map(({ role, level, faction }) => ({
+                className: `grnd-directory-badge grnd-directory-${role}`,
+                text: role === "administrator"
+                    ? `Administrator${level ? ` · ${level}` : ""}`
+                    : `Faction leader${faction ? ` · ${faction}` : ""}`
+            }));
+            const alreadyCurrent = badges.length === badgeLabels.length && badges.every((badge, index) =>
+                badge.className === badgeLabels[index].className && badge.textContent === badgeLabels[index].text
+            );
+            if (alreadyCurrent) return;
+
+            badges.forEach(badge => badge.remove());
+            badgeLabels.forEach(({ className, text }, index) => {
+                const badge = document.createElement("span");
+                badge.className = className;
+                badge.textContent = text;
+                const role = roles[index].role;
+                badge.title = `Synced from the ${role === "administrator" ? "administrator" : "faction leader"} list`;
+                element.append(" ", badge);
+            });
+        });
+    }
+
+    async function markComplaintDirectoryNames() {
+        try {
+            const stored = await getExtensionStorage(LS_PLAYER_DIRECTORIES);
+            const rolesByName = buildDirectoryRoleMap(stored[LS_PLAYER_DIRECTORIES] || {});
+            applyComplaintDirectoryNames(rolesByName);
+            return rolesByName;
+        } catch (error) {
+            console.warn("Could not read the synced GRND player directories:", error);
+            return null;
+        }
+    }
+
+    function initializeComplaintEnhancements(main) {
+        linkifyComplaintUrls(main);
+        let directoryRoles = null;
+        const observer = new MutationObserver(() => {
+            linkifyComplaintUrls(main);
+            if (directoryRoles) applyComplaintDirectoryNames(directoryRoles);
+        });
+        observer.observe(main, { childList: true, characterData: true, subtree: true });
+        markComplaintDirectoryNames().then(rolesByName => {
+            if (!rolesByName) return;
+            directoryRoles = rolesByName;
+            applyComplaintDirectoryNames(directoryRoles);
+        });
+
+        let panelHiddenForEvidence = false;
+        let evidenceViewer = null;
+        let restoreCheckTimer = 0;
+        const viewerSelector = '[role="dialog"], [aria-modal="true"], [class*="lightbox" i], [class*="viewer" i], [class*="modal" i], [class*="fancybox" i], [class*="image-preview" i], [class*="zoom" i], [class*="evidence" i], [class*="overlay" i]';
+        const closeControlSelector = '[aria-label*="close" i], [title*="close" i], [class*="close" i], [data-dismiss], [data-action="close"]';
+        const isVisible = element => {
+            if (!element || !element.isConnected) return false;
+            const style = window.getComputedStyle(element);
+            return style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0"
+                && element.getBoundingClientRect().width > 0;
+        };
+        const findEvidenceViewer = target => {
+            const closestViewer = target && target.closest(viewerSelector);
+            if (closestViewer && !main.contains(closestViewer) && !closestViewer.contains(main)
+                && closestViewer.querySelector("img") && isVisible(closestViewer)) return closestViewer;
+
+            const fixedElements = Array.from(document.body.querySelectorAll("*")).filter(element => {
+                if (element === document.getElementById("grnd-floating-panel") || main.contains(element) || element.contains(main)) return false;
+                const bounds = element.getBoundingClientRect();
+                return window.getComputedStyle(element).position === "fixed"
+                    && element.querySelector("img")
+                    && bounds.width >= window.innerWidth * 0.3
+                    && bounds.height >= window.innerHeight * 0.3
+                    && isVisible(element);
+            });
+            return fixedElements.find(element => !fixedElements.some(other => other !== element && other.contains(element))) || null;
+        };
+        const restorePanel = () => {
+            if (!panelHiddenForEvidence) return;
+            const panel = document.getElementById("grnd-floating-panel");
+            if (panel) {
+                panel.style.visibility = "";
+                panel.removeAttribute("aria-hidden");
+            }
+            panelHiddenForEvidence = false;
+            evidenceViewer = null;
+        };
+        document.addEventListener("click", event => {
+            const target = event.target instanceof Element ? event.target : null;
+            if (panelHiddenForEvidence) {
+                const currentViewer = findEvidenceViewer(target);
+                if (currentViewer) evidenceViewer = currentViewer;
+                const closeControl = target && target.closest(closeControlSelector);
+                if (closeControl) {
+                    window.setTimeout(restorePanel, 150);
+                    return;
+                }
+                if (evidenceViewer && target && (target === evidenceViewer || target.closest('[class*="backdrop" i]'))) {
+                    window.setTimeout(() => {
+                        if (!isVisible(evidenceViewer)) restorePanel();
+                    }, 150);
+                    return;
+                }
+                if (evidenceViewer && target && evidenceViewer.contains(target)) return;
+                if (!evidenceViewer) {
+                    if (target && main.contains(target) && !target.closest("img")) restorePanel();
+                    return;
+                }
+                window.setTimeout(() => {
+                    if (evidenceViewer && isVisible(evidenceViewer)) return;
+                    restorePanel();
+                }, 100);
+                return;
+            }
+            const image = target && (target.closest("img") || target.closest("a") && target.closest("a").querySelector("img"));
+            if (!image || !main.contains(image)) return;
+            const panel = document.getElementById("grnd-floating-panel");
+            if (!panel) return;
+            panelHiddenForEvidence = true;
+            panel.style.visibility = "hidden";
+            panel.setAttribute("aria-hidden", "true");
+            window.setTimeout(() => {
+                evidenceViewer = findEvidenceViewer(target);
+            }, 0);
+        }, true);
+        const viewerObserver = new MutationObserver(() => {
+            if (!panelHiddenForEvidence || restoreCheckTimer) return;
+            restoreCheckTimer = window.setTimeout(() => {
+                restoreCheckTimer = 0;
+                const currentViewer = findEvidenceViewer(null);
+                if (currentViewer) {
+                    evidenceViewer = currentViewer;
+                    return;
+                }
+                if (evidenceViewer && !isVisible(evidenceViewer)) restorePanel();
+            }, 150);
+        });
+        viewerObserver.observe(document.body, { childList: true, attributes: true, subtree: true, attributeFilter: ["class", "style", "aria-hidden", "open"] });
+        window.addEventListener("keydown", event => {
+            if (event.key === "Escape") restorePanel();
+        });
     }
 
     function replaceInputTokens(content, iv) {
@@ -1644,6 +2171,7 @@
             <p class="grnd-settings-intro">Personalize your workspace. Preferences and templates are saved on this browser.</p>
             <nav class="grnd-settings-nav" aria-label="Jump to a settings section">
                 <button type="button" data-settings-jump="grnd-settings-admin">Profile</button>
+                <button type="button" data-settings-jump="grnd-settings-account">Account</button>
                 <button type="button" data-settings-jump="grnd-settings-sections">Sections</button>
                 <button type="button" data-settings-jump="grnd-settings-templates">Templates</button>
                 <button type="button" data-settings-jump="grnd-settings-appearance">Appearance</button>
@@ -1658,6 +2186,23 @@
                     <button id="grnd-admin-save" class="grnd-settings-action-btn grnd-btn-save">Save</button>
                 </div>
                 <div id="grnd-admin-status" class="grnd-settings-status"></div>
+            </div>
+
+            <div class="grnd-settings-divider"></div>
+
+            <div id="grnd-settings-account" class="grnd-settings-section">
+                <div class="grnd-settings-section-title">Portal account &amp; premium access</div>
+                <p class="grnd-updates-help">Sign in with your community portal account to link this installation to your account and receive account-based feature entitlements. Your password is sent to the portal sign-in service and is not saved by the extension.</p>
+                <form id="grnd-extension-account-form">
+                    <label>Email <input id="grnd-extension-account-email" type="email" autocomplete="username" required></label>
+                    <label>Password <input id="grnd-extension-account-password" type="password" autocomplete="current-password" required></label>
+                    <button id="grnd-extension-account-signin" class="grnd-settings-action-btn grnd-btn-save" type="submit">Link portal account</button>
+                </form>
+                <div id="grnd-extension-account-current" hidden>
+                    <div class="grnd-account-summary">Linked account: <strong id="grnd-extension-account-current-email"></strong></div>
+                    <button id="grnd-extension-account-signout" class="grnd-settings-action-btn grnd-btn-upload" type="button">Unlink account</button>
+                </div>
+                <div id="grnd-extension-account-status" class="grnd-settings-status" role="status"></div>
             </div>
 
             <div class="grnd-settings-divider"></div>
@@ -1750,7 +2295,12 @@
                     <input type="checkbox" id="grnd-usage-enabled" checked>
                     Share anonymous usage counts
                 </label>
-                <p class="grnd-updates-help">When enabled, the extension sends a random installation ID and version at most once a day. It does not send report history, admin name, or complaint content. You can turn this off any time; your stored install count will be deleted.</p>
+                <p class="grnd-updates-help">When enabled, the extension sends a random installation ID and version at most once a day. Report history and complaint contents are never sent. You can turn this off any time to delete your stored usage record.</p>
+                <label class="grnd-analytics-label">
+                    <input type="checkbox" id="grnd-share-admin-name">
+                    Share my saved admin name with the extension owner
+                </label>
+                <p class="grnd-updates-help">This is separate, optional consent. If enabled, your saved admin name is sent with usage reports so the owner can see which admins use the extension. It is not shared with other users and is removed when you turn this off or disable analytics.</p>
                 <div id="grnd-usage-status" class="grnd-settings-status" role="status"></div>
             </div>
         </section>`;
@@ -1781,7 +2331,49 @@
                 localStorage.removeItem(LS_ADMIN);
                 showStatus("grnd-admin-status", "Cleared admin name.", "#d97706");
             }
+            getExtensionStorage(USAGE_SHARE_ADMIN_NAME).then(settings => {
+                if (settings[USAGE_SHARE_ADMIN_NAME] === true) {
+                    return recordExtensionUsage(true);
+                }
+            }).catch(error => {
+                console.error("Could not update the opted-in admin name report:", error);
+                showStatus("grnd-usage-status", error.message, "#dc2626");
+            });
         });
+
+        const accountForm = document.getElementById("grnd-extension-account-form");
+        accountForm.addEventListener("submit", async event => {
+            event.preventDefault();
+            const submit = document.getElementById("grnd-extension-account-signin");
+            const email = document.getElementById("grnd-extension-account-email").value.trim();
+            const passwordInput = document.getElementById("grnd-extension-account-password");
+            submit.disabled = true;
+            document.getElementById("grnd-extension-account-status").textContent = "Linking account…";
+            try {
+                await signInExtensionAccount(email, passwordInput.value);
+                passwordInput.value = "";
+                await loadExtensionAccountSettings();
+            } catch (error) {
+                document.getElementById("grnd-extension-account-status").textContent = error.message;
+                document.getElementById("grnd-extension-account-status").style.color = "#dc2626";
+            } finally {
+                submit.disabled = false;
+            }
+        });
+        document.getElementById("grnd-extension-account-signout").addEventListener("click", async () => {
+            const button = document.getElementById("grnd-extension-account-signout");
+            button.disabled = true;
+            try {
+                await signOutExtensionAccount();
+                await loadExtensionAccountSettings();
+                showStatus("grnd-extension-account-status", "Portal account unlinked.", "#16a34a");
+            } catch (error) {
+                showStatus("grnd-extension-account-status", error.message, "#dc2626");
+            } finally {
+                button.disabled = false;
+            }
+        });
+        loadExtensionAccountSettings();
 
         document.getElementById("gcf-colour-picker").addEventListener("input", e => {
             document.getElementById("gcf-colour").value = e.target.value;
@@ -1797,22 +2389,47 @@
         themeToggle.checked = document.documentElement.dataset.grndTheme === "dark";
         themeToggle.addEventListener("change", () => applyTheme(themeToggle.checked, true));
         const usageToggle = document.getElementById("grnd-usage-enabled");
+        const adminNameToggle = document.getElementById("grnd-share-admin-name");
         getExtensionStorage(USAGE_OPT_OUT).then(settings => {
             usageToggle.checked = settings[USAGE_OPT_OUT] !== true;
+            adminNameToggle.disabled = settings[USAGE_OPT_OUT] === true;
         }).catch(error => {
             usageToggle.checked = false;
             usageToggle.disabled = true;
+            adminNameToggle.disabled = true;
+            showStatus("grnd-usage-status", error.message, "#dc2626");
+        });
+        getExtensionStorage(USAGE_SHARE_ADMIN_NAME).then(settings => {
+            adminNameToggle.checked = settings[USAGE_SHARE_ADMIN_NAME] === true;
+        }).catch(error => {
+            adminNameToggle.checked = false;
+            adminNameToggle.disabled = true;
             showStatus("grnd-usage-status", error.message, "#dc2626");
         });
         usageToggle.addEventListener("change", async () => {
             usageToggle.disabled = true;
             try {
                 await setUsageAnalyticsEnabled(usageToggle.checked);
+                if (!usageToggle.checked) adminNameToggle.checked = false;
+                adminNameToggle.disabled = !usageToggle.checked;
             } catch (error) {
                 console.error("Could not update anonymous usage preference:", error);
                 showStatus("grnd-usage-status", error.message, "#dc2626");
+                usageToggle.checked = !usageToggle.checked;
             } finally {
                 usageToggle.disabled = false;
+            }
+        });
+        adminNameToggle.addEventListener("change", async () => {
+            adminNameToggle.disabled = true;
+            try {
+                await setAdminNameSharingEnabled(adminNameToggle.checked);
+            } catch (error) {
+                adminNameToggle.checked = !adminNameToggle.checked;
+                showStatus("grnd-usage-status", error.message, "#dc2626");
+            } finally {
+                const settings = await getExtensionStorage(USAGE_OPT_OUT).catch(() => ({ [USAGE_OPT_OUT]: true }));
+                adminNameToggle.disabled = settings[USAGE_OPT_OUT] === true;
             }
         });
 
@@ -2029,12 +2646,21 @@
                 display: flex; gap: 8px; align-items: center;
             }
 
-            #grnd-settings-btn, #grnd-history-btn, #grnd-updates-btn {
+            #grnd-settings-btn, #grnd-history-btn, #grnd-updates-btn,
+            #grnd-admin-list-btn, #grnd-leader-list-btn {
                 background: #f1f5f9; color: #334155; border: 1px solid #cbd5e1;
                 padding: 6px 14px; font-size: 13px; font-weight: 600; border-radius: 6px; cursor: pointer;
                 transition: background 0.15s ease;
             }
-            #grnd-settings-btn:hover, #grnd-history-btn:hover, #grnd-updates-btn:hover { background: #e2e8f0; }
+            #grnd-settings-btn:hover, #grnd-history-btn:hover, #grnd-updates-btn:hover,
+            #grnd-admin-list-btn:hover, #grnd-leader-list-btn:hover { background: #e2e8f0; }
+            #grnd-directory-nav-status { display: block; padding: 4px 0; color: #475569; font-size: 12px; }
+            .grnd-complaint-link { color: #2563eb; text-decoration: underline; overflow-wrap: anywhere; }
+            .grnd-directory-badge {
+                display: inline-block; margin-left: 6px; padding: 2px 7px; border-radius: 999px;
+                background: #fef3c7; color: #92400e; font: 600 11px/1.5 system-ui, sans-serif; vertical-align: middle;
+            }
+            .grnd-directory-leader { background: #dbeafe; color: #1d4ed8; }
 
             #grnd-section-switcher {
                 display: flex; gap: 6px; overflow-x: auto; padding-bottom: 4px; margin-bottom: 8px;
@@ -2121,6 +2747,13 @@
             .grnd-settings-row { display: flex; align-items: center; gap: 8px; }
             .grnd-settings-status { min-height: 16px; margin-top: 6px; font-size: 12px; }
             .grnd-settings-intro { margin: 0 0 8px; color: #64748b; font-size: 13px; }
+            #grnd-extension-account-form { display: grid; gap: 10px; max-width: 520px; }
+            #grnd-extension-account-form label { display: grid; gap: 5px; color: #475569; font-size: 12px; font-weight: 700; }
+            #grnd-extension-account-form input { width: 100%; padding: 8px 10px; border: 1px solid #cbd5e1; border-radius: 6px; background: #fff; color: #1e293b; font-size: 13px; }
+            .grnd-account-summary { margin: 8px 0 12px; color: #475569; font-size: 13px; overflow-wrap: anywhere; }
+            [data-grnd-theme="dark"] #grnd-extension-account-form label,
+            [data-grnd-theme="dark"] .grnd-account-summary { color: #cbd5e1; }
+            [data-grnd-theme="dark"] #grnd-extension-account-form input { background: #0f1a2b; color: #e2e8f0; border-color: #334766; }
             .grnd-settings-nav { display: flex; gap: 7px; overflow-x: auto; padding: 8px 0 14px; margin-bottom: 4px; }
             .grnd-settings-nav button { flex: 0 0 auto; padding: 7px 11px; border: 1px solid #cbd5e1; border-radius: 999px; background: #f8fafc; color: #475569; font-size: 12px; font-weight: 700; cursor: pointer; }
             .grnd-settings-nav button:hover { border-color: #60a5fa; color: #1d4ed8; }
@@ -2190,9 +2823,15 @@
             }
             [data-grnd-theme="dark"] #grnd-floating-panel { border-bottom-color: #26354d; }
             [data-grnd-theme="dark"] #grnd-floating-panel .grnd-top-bar span { color: #e2e8f0 !important; }
+            [data-grnd-theme="dark"] #grnd-directory-nav-status { color: #cbd5e1; }
+            [data-grnd-theme="dark"] .grnd-complaint-link { color: #93c5fd; }
+            [data-grnd-theme="dark"] .grnd-directory-badge { background: #713f12; color: #fde68a; }
+            [data-grnd-theme="dark"] .grnd-directory-leader { background: #1e3a8a; color: #bfdbfe; }
             [data-grnd-theme="dark"] #grnd-settings-btn,
             [data-grnd-theme="dark"] #grnd-history-btn,
             [data-grnd-theme="dark"] #grnd-updates-btn,
+            [data-grnd-theme="dark"] #grnd-admin-list-btn,
+            [data-grnd-theme="dark"] #grnd-leader-list-btn,
             [data-grnd-theme="dark"] #grnd-updates-refresh,
             [data-grnd-theme="dark"] .grnd-settings-nav button,
             [data-grnd-theme="dark"] .grnd-section-btn,
@@ -2202,6 +2841,8 @@
             [data-grnd-theme="dark"] #grnd-settings-btn:hover,
             [data-grnd-theme="dark"] #grnd-history-btn:hover,
             [data-grnd-theme="dark"] #grnd-updates-btn:hover,
+            [data-grnd-theme="dark"] #grnd-admin-list-btn:hover,
+            [data-grnd-theme="dark"] #grnd-leader-list-btn:hover,
             [data-grnd-theme="dark"] .grnd-settings-nav button:hover,
             [data-grnd-theme="dark"] .grnd-section-btn:hover { background: #1b2b45; color: #f8fafc; }
             [data-grnd-theme="dark"] .grnd-settings-section[id] { background: #0f1a2b; border-color: #26354d; }
@@ -2301,11 +2942,14 @@
             <div class="grnd-top-bar">
                 <span style="font-weight:700; font-size:14px; color:#1e293b;">Grnd Extension 2.0</span>
                 <div class="grnd-top-right-btns">
+                    <button id="grnd-admin-list-btn" type="button">Administrators</button>
+                    <button id="grnd-leader-list-btn" type="button">Faction leaders</button>
                     <button id="grnd-updates-btn">📣 Announcements & Updates</button>
                     <button id="grnd-history-btn">📊 Reports History</button>
                     <button id="grnd-settings-btn">⚙️ Settings</button>
                 </div>
             </div>
+            <span id="grnd-directory-nav-status" role="status" aria-live="polite" hidden></span>
             <div id="grnd-announcements-banners"></div>
             <div id="grnd-section-switcher"></div>
             <div id="grnd-template-buttons-area"></div>
@@ -2315,6 +2959,8 @@
         document.getElementById("grnd-settings-btn").addEventListener("click", openSettings);
         document.getElementById("grnd-history-btn").addEventListener("click", openHistoryModal);
         document.getElementById("grnd-updates-btn").addEventListener("click", openUpdatesModal);
+        document.getElementById("grnd-admin-list-btn").addEventListener("click", () => openDirectoryPage("administrator"));
+        document.getElementById("grnd-leader-list-btn").addEventListener("click", () => openDirectoryPage("leader"));
         document.getElementById("grnd-announcements-banners").addEventListener("click", e => {
             const viewButton = e.target.closest(".grnd-announcement-view");
             if (viewButton) {
@@ -2331,6 +2977,7 @@
             renderAnnouncementBanners();
         });
 
+        initializeComplaintEnhancements(document.querySelector("main.admin-complaints"));
         activeSectionIndex = 0;
         renderSectionButtons();
         renderTemplateButtons();
@@ -2338,6 +2985,36 @@
         recordExtensionUsage().catch(error => console.warn("Could not record anonymous extension usage:", error));
 
         setTimeout(updateBodyPadding, 100);
+    }
+
+    function openDirectoryPage(role) {
+        const status = document.getElementById("grnd-directory-nav-status");
+        const matchesRole = anchor => {
+            const label = anchor.textContent.trim().toLocaleLowerCase();
+            return role === "administrator"
+                ? /^(administrators?|admins?)$/.test(label)
+                : /^(faction\s+)?leaders?$/.test(label);
+        };
+        const link = Array.from(document.querySelectorAll("a[href]")).find(anchor => {
+            if (!matchesRole(anchor)) return false;
+            const url = new URL(anchor.href, window.location.href);
+            return url.origin === window.location.origin && url.pathname.includes("/admin/");
+        });
+        if (!link) {
+            status.hidden = false;
+            status.textContent = `Open the ${role === "administrator" ? "Administrators" : "Faction leaders"} page from the site navigation, then use its Sync button.`;
+            return;
+        }
+
+        const url = new URL(link.href, window.location.href);
+        if (url.pathname === window.location.pathname) {
+            status.hidden = false;
+            status.textContent = "You are already on this list. Use its Sync button.";
+            return;
+        }
+        status.hidden = false;
+        status.textContent = "The list page will open in a new tab. Select Sync there to save the current list.";
+        window.open(url.href, "_blank", "noopener,noreferrer");
     }
 
     function waitForPage() {
@@ -2352,8 +3029,14 @@
     }
 
     function init() {
-        if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", waitForPage);
-        else waitForPage();
+        const isAdminPage = /\/admin\//i.test(window.location.pathname);
+        if (!isAdminPage) return;
+        const start = () => {
+            if (/\/admin\/complaints(?:\/|$)/i.test(window.location.pathname)) waitForPage();
+            else waitForDirectoryPage();
+        };
+        if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start);
+        else start();
     }
 
     init();
