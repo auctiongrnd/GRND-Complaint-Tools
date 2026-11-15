@@ -24,9 +24,10 @@
 
         <section class="portal-hero staff-portal-hero">
             <div>
-                <p class="eyebrow"><span class="eyebrow-dot"></span> PUBLISHING &amp; OPERATIONS</p>
-                <h1>Extension Admin</h1>
-                <p>Manage releases, keep the community informed, and follow feedback in one workspace.</p>
+                <p class="eyebrow"><span class="eyebrow-dot"></span> OPERATIONS CONTROL CENTER</p>
+                <h1>One workspace.<br><span>Clear control.</span></h1>
+                <p>Track extension growth, manage account feature access, publish updates, and keep community support moving.</p>
+                <div class="hero-tags"><span>Growth insights</span><span>Account entitlements</span><span>Publishing &amp; support</span></div>
             </div>
             <div class="hero-aside staff-hero-aside">
                 <span class="hero-aside-icon" aria-hidden="true">⌘</span>
@@ -86,6 +87,8 @@
                 <span class="staff-welcome-icon" aria-hidden="true">✦</span>
             </div>
             <nav class="workspace-nav" aria-label="Staff workspace sections">
+                <a href="#usage-card">Growth</a>
+                <a href="#entitlements-card">Feature access</a>
                 <a href="#publishing-tools">Publish</a>
                 <a href="#announcements-history">Announcements</a>
                 <a href="#release-history">Releases</a>
@@ -106,9 +109,46 @@
                     <article class="usage-stat"><span>Active in 30 days</span><strong id="usage-active">—</strong></article>
                     <article class="usage-stat"><span>New in 30 days</span><strong id="usage-new">—</strong></article>
                 </div>
+                <h3>New installations · last 30 days</h3>
+                <div id="usage-growth-chart" class="growth-chart" role="img" aria-label="Daily new extension installations"></div>
                 <h3>Active installs by version</h3>
                 <div id="usage-versions" class="item-list"></div>
+                <div class="admin-section-heading">
+                    <div>
+                        <h3>Admins who opted in</h3>
+                        <p class="hint">Only saved admin names explicitly shared from extension settings appear here. IP addresses are not collected.</p>
+                    </div>
+                    <span id="identified-admin-total" class="feedback-total"></span>
+                </div>
+                <div id="identified-admins-list" class="item-list"></div>
                 <p id="usage-status" class="hint" role="status"></p>
+            </section>
+
+            <section id="entitlements-card" class="card" hidden>
+                <div class="card-heading-row">
+                    <div>
+                        <p class="eyebrow">ACCOUNT CONTROLS</p>
+                        <h2>Feature access</h2>
+                    </div>
+                </div>
+                <p class="hint">Grant or suspend a named feature for a portal account. Use the account ID shown in the user's Account tab or from an opted-in, linked extension. Unknown feature keys are safe to configure now and can be enforced when a future premium feature is added.</p>
+                <form id="entitlement-form" class="entitlement-form">
+                    <label>Portal account ID
+                        <input id="entitlement-user-id" inputmode="text" autocomplete="off" placeholder="UUID from the user's account page" required>
+                    </label>
+                    <label>Feature key
+                        <input id="entitlement-feature-key" pattern="[a-z][a-z0-9_]{1,63}" placeholder="example: premium_reports" required>
+                    </label>
+                    <label class="checkbox-label">
+                        <span><input id="entitlement-enabled" type="checkbox" checked> Enable this feature for the account</span>
+                    </label>
+                    <button class="button" type="submit">Save access</button>
+                </form>
+                <p id="entitlement-status" class="hint" role="status"></p>
+                <h3>Configured accounts</h3>
+                <div id="entitlements-list" class="item-list"></div>
+                <h3>Recent access changes</h3>
+                <div id="entitlement-audit-list" class="item-list"></div>
             </section>
 
             <section id="requests-card" class="card" hidden>

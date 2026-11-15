@@ -12,6 +12,9 @@
     let currentUser;
     let currentRole;
     let authMode = "signin";
+    let feedbackRows = [];
+    let feedbackActivity = new Map();
+    let entitlementRows = [];
 
     function setStatus(message, isError) {
         statusEl.textContent = message || "";
@@ -77,19 +80,27 @@
         document.getElementById("requests-card").hidden = staff.role !== "owner";
         document.getElementById("staff-card").hidden = staff.role !== "owner";
         document.getElementById("usage-card").hidden = staff.role !== "owner";
+        document.getElementById("entitlements-card").hidden = staff.role !== "owner";
         await refreshPortalData();
     }
 
     async function refreshPortalData() {
+        setStatus("");
         const tasks = [
             loadAnnouncements(),
             loadReleases(),
             loadFeedback()
         ];
         if (currentRole === "owner") {
-            tasks.push(loadUsageStats(), loadAccessRequests(), loadStaff());
+            tasks.push(loadUsageStats(), loadAccessRequests(), loadStaff(), loadEntitlements(), loadEntitlementAudit());
         }
-        await Promise.all(tasks);
+        const results = await Promise.allSettled(tasks);
+        const failures = results.filter(result => result.status === "rejected");
+        if (failures.length) {
+            console.error("One or more staff workspace sections could not be loaded:", failures.map(result => result.reason));
+            const details = failures.map(result => result.reason && result.reason.message).filter(Boolean).join(" ");
+            setStatus(`Some workspace data could not be loaded. Apply the latest Supabase schema if this is a feedback feature. ${details}`, true);
+        }
     }
 
     async function loadAnnouncements() {
@@ -171,7 +182,8 @@
             status.textContent = `Could not load usage statistics. Apply the updated Supabase schema. ${error.message}`;
             throw error;
         }
-        if (!data || typeof data !== "object" || !Array.isArray(data.versions)) {
+        if (!data || typeof data !== "object" || !Array.isArray(data.versions)
+            || !Array.isArray(data.identified_admins) || !Array.isArray(data.daily_installs)) {
             throw new Error("Usage statistics returned an unexpected response.");
         }
 
@@ -184,6 +196,20 @@
         document.getElementById("usage-total").textContent = total.toLocaleString();
         document.getElementById("usage-active").textContent = active.toLocaleString();
         document.getElementById("usage-new").textContent = recent.toLocaleString();
+        const dailyInstalls = data.daily_installs.map(item => ({
+            day: String(item.day || ""),
+            installs: Number(item.installs)
+        })).filter(item => /^\d{4}-\d{2}-\d{2}$/.test(item.day)
+            && Number.isSafeInteger(item.installs) && item.installs >= 0);
+        const peakInstalls = Math.max(1, ...dailyInstalls.map(item => item.installs));
+        document.getElementById("usage-growth-chart").innerHTML = dailyInstalls.length
+            ? dailyInstalls.map(item => `
+                <div class="growth-column" title="${escapeHtml(item.day)}: ${item.installs} new">
+                    <span style="height:${Math.max(4, item.installs / peakInstalls * 100)}%"></span>
+                    <small>${escapeHtml(item.day.slice(8))}</small>
+                </div>
+            `).join("")
+            : '<p class="empty">No new installations reported in this period.</p>';
         versionsList.innerHTML = data.versions.length
             ? data.versions.map(item => {
                 const count = Number(item.active_installs);
@@ -196,23 +222,137 @@
                 </article>`;
             }).join("")
             : '<p class="empty">No active installations reported yet.</p>';
+        const adminsList = document.getElementById("identified-admins-list");
+        const admins = data.identified_admins.filter(item => item && typeof item.admin_name === "string" && item.admin_name.trim());
+        document.getElementById("identified-admin-total").textContent = `${admins.length} opted in`;
+        adminsList.innerHTML = admins.length ? admins.map(item => `
+            <article class="item identified-admin-item">
+                <div>
+                    <h3>${escapeHtml(item.admin_name)}</h3>
+                    <div class="item-meta">Version ${escapeHtml(item.version || "unknown")} · Last active ${escapeHtml(dateLabel(item.last_seen_at))}</div>
+                    ${item.user_id ? `<code class="account-id">${escapeHtml(item.user_id)}</code>` : '<div class="item-meta">Portal account not linked</div>'}
+                </div>
+                ${item.user_id ? `<button class="button secondary" data-manage-admin="${escapeHtml(item.user_id)}" type="button">Manage features</button>` : ""}
+            </article>
+        `).join("") : '<p class="empty">No admins have opted in to name sharing yet.</p>';
         status.textContent = `Updated ${new Date().toLocaleString()}.`;
+    }
+
+    async function loadEntitlements() {
+        const { data, error } = await client
+            .from("extension_user_entitlements")
+            .select("user_id,features,updated_at,updated_by")
+            .order("updated_at", { ascending: false });
+        if (error) throw error;
+        entitlementRows = data || [];
+        document.getElementById("entitlements-list").innerHTML = entitlementRows.length
+            ? entitlementRows.map(item => {
+                const features = item.features && typeof item.features === "object" && !Array.isArray(item.features)
+                    ? Object.entries(item.features).filter(([, enabled]) => typeof enabled === "boolean")
+                    : [];
+                return `<article class="item entitlement-item">
+                    <div class="entitlement-account">
+                        <strong>${escapeHtml(item.user_id)}</strong>
+                        <span class="item-meta">Updated ${escapeHtml(dateLabel(item.updated_at))}</span>
+                    </div>
+                    ${features.length ? `<div class="entitlement-feature-list">${features.map(([key, enabled]) => `
+                        <div class="entitlement-feature">
+                            <span><code>${escapeHtml(key)}</code><span class="entitlement-state ${enabled ? "is-enabled" : "is-disabled"}">${enabled ? "Enabled" : "Suspended"}</span></span>
+                            <button class="button secondary" data-toggle-feature
+                                data-feature-user="${escapeHtml(item.user_id)}"
+                                data-feature-key="${escapeHtml(key)}"
+                                data-feature-enabled="${String(!enabled)}" type="button">${enabled ? "Suspend" : "Enable"}</button>
+                        </div>
+                    `).join("")}</div>` : '<p class="empty">No feature keys configured.</p>'}
+                </article>`;
+            }).join("")
+            : '<p class="empty">No account-specific features configured yet.</p>';
+    }
+
+    async function loadEntitlementAudit() {
+        const { data, error } = await client
+            .from("extension_entitlement_audit")
+            .select("user_id,feature_key,previous_enabled,enabled,created_at")
+            .order("created_at", { ascending: false })
+            .limit(20);
+        if (error) throw error;
+        document.getElementById("entitlement-audit-list").innerHTML = data && data.length
+            ? data.map(item => `<article class="item audit-item">
+                <strong>${escapeHtml(item.feature_key)}</strong>
+                <span>${item.previous_enabled ? "Enabled" : "Suspended"} → ${item.enabled ? "Enabled" : "Suspended"}</span>
+                <code class="account-id">${escapeHtml(item.user_id)}</code>
+                <time class="item-meta" datetime="${escapeHtml(item.created_at)}">${escapeHtml(dateLabel(item.created_at))}</time>
+            </article>`).join("")
+            : '<p class="empty">No access changes have been recorded.</p>';
+    }
+
+    async function saveUserFeature(userId, featureKey, enabled) {
+        if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(userId)) {
+            throw new Error("Enter a valid portal account UUID.");
+        }
+        if (!/^[a-z][a-z0-9_]{1,63}$/.test(featureKey)) {
+            throw new Error("Feature keys must start with a lowercase letter and use only lowercase letters, numbers, and underscores.");
+        }
+        const { error } = await client.rpc("set_extension_user_feature", {
+            p_user_id: userId,
+            p_feature_key: featureKey,
+            p_enabled: enabled
+        });
+        if (error) throw error;
+        await Promise.all([loadEntitlements(), loadEntitlementAudit()]);
+        document.getElementById("entitlement-status").textContent =
+            `${featureKey} ${enabled ? "enabled" : "suspended"} for account ${userId}.`;
     }
 
     async function loadFeedback() {
         const list = document.getElementById("feedback-list");
         const { data, error } = await client
             .from("extension_feedback")
-            .select("id,email,category,title,message,status,created_at")
+            .select("id,email,category,title,message,status,public_board,created_at")
             .order("created_at", { ascending: false });
         if (error) {
             list.innerHTML = `<p class="empty">Could not load feedback. Apply the updated Supabase schema. ${escapeHtml(error.message)}</p>`;
             throw error;
         }
+        feedbackRows = data || [];
+        feedbackActivity = new Map();
+        if (feedbackRows.length) {
+            const { data: activity, error: activityError } = await client
+                .from("extension_feedback_activity")
+                .select("feedback_id,old_status,new_status,created_at")
+                .in("feedback_id", feedbackRows.map(item => item.id))
+                .order("created_at", { ascending: true });
+            if (activityError) throw activityError;
+            feedbackActivity = (activity || []).reduce((groups, item) => {
+                if (!groups.has(item.feedback_id)) groups.set(item.feedback_id, []);
+                groups.get(item.feedback_id).push(item);
+                return groups;
+            }, new Map());
+        }
+        renderFeedback();
+    }
+
+    function renderFeedback() {
+        const list = document.getElementById("feedback-list");
+        const search = document.getElementById("feedback-search").value.trim().toLocaleLowerCase();
+        const category = document.getElementById("feedback-filter-category").value;
+        const status = document.getElementById("feedback-filter-status").value;
+        const filtered = feedbackRows.filter(item => {
+            const matchesSearch = `${item.title} ${item.message} ${item.email}`.toLocaleLowerCase().includes(search);
+            return matchesSearch
+                && (category === "all" || item.category === category)
+                && (status === "all" || item.status === status);
+        });
+        document.getElementById("feedback-total").textContent = `${feedbackRows.length} total · ${filtered.length} shown`;
         const statuses = ["new", "reviewing", "planned", "done", "declined"];
-        list.innerHTML = data.length ? data.map(item => `
+        list.innerHTML = filtered.length ? filtered.map(item => {
+            const activity = feedbackActivity.get(item.id) || [];
+            return `
             <article class="item">
-                <h3>${escapeHtml(item.title)}</h3>
+                <div class="feedback-item-heading">
+                    <h3>${escapeHtml(item.title)}</h3>
+                    ${item.public_board ? '<span class="feedback-public-badge">On public board</span>' : ""}
+                </div>
                 <p>${escapeHtml(item.message)}</p>
                 <div class="item-meta">${escapeHtml(item.category)} · ${escapeHtml(item.email)} · ${escapeHtml(dateLabel(item.created_at))}</div>
                 <div class="item-actions">
@@ -223,8 +363,22 @@
                     </label>
                     <button class="button secondary" data-update-feedback="${escapeHtml(item.id)}" type="button">Save status</button>
                 </div>
+                <details class="feedback-history">
+                    <summary>Status activity (${activity.length})</summary>
+                    <ol class="feedback-timeline">
+                        ${activity.length ? activity.map(entry => `
+                            <li>
+                                <strong>${entry.old_status
+                                    ? `${escapeHtml(entry.old_status)} → ${escapeHtml(entry.new_status)}`
+                                    : `Submitted · ${escapeHtml(entry.new_status)}`}</strong>
+                                <time datetime="${escapeHtml(entry.created_at)}">${escapeHtml(dateLabel(entry.created_at))}</time>
+                            </li>
+                        `).join("") : "<li>No status changes recorded yet.</li>"}
+                    </ol>
+                </details>
             </article>
-        `).join("") : '<p class="empty">No feedback submitted yet.</p>';
+        `;
+        }).join("") : `<p class="empty">${feedbackRows.length ? "No feedback matches those filters." : "No feedback submitted yet."}</p>`;
     }
 
     async function submitFeedback(event) {
@@ -356,7 +510,17 @@
         const target = event.target.closest("button");
         if (!target) return;
 
-        if (target.dataset.approveUser) {
+        if (target.dataset.manageAdmin) {
+            document.getElementById("entitlement-user-id").value = target.dataset.manageAdmin;
+            document.getElementById("entitlements-card").scrollIntoView({ behavior: "smooth", block: "start" });
+            document.getElementById("entitlement-feature-key").focus();
+        } else if (target.hasAttribute("data-toggle-feature")) {
+            await saveUserFeature(
+                target.dataset.featureUser,
+                target.dataset.featureKey,
+                target.dataset.featureEnabled === "true"
+            );
+        } else if (target.dataset.approveUser) {
             const { error } = await client.from("extension_staff").insert({
                 user_id: target.dataset.approveUser,
                 email: target.dataset.approveEmail,
@@ -409,6 +573,7 @@
                 .update({ status: select.value })
                 .eq("id", target.dataset.updateFeedback);
             if (error) throw error;
+            await loadFeedback();
             setStatus("Feedback status updated.");
         }
     }
@@ -445,6 +610,17 @@
         document.getElementById("release-form").addEventListener("submit", event => run(() => publishRelease(event)));
         document.getElementById("portal-view").addEventListener("click", event => run(() => handlePortalClick(event)));
         document.getElementById("usage-refresh").addEventListener("click", () => run(loadUsageStats));
+        document.getElementById("entitlement-form").addEventListener("submit", event => {
+            event.preventDefault();
+            run(() => saveUserFeature(
+                document.getElementById("entitlement-user-id").value.trim(),
+                document.getElementById("entitlement-feature-key").value.trim(),
+                document.getElementById("entitlement-enabled").checked
+            ));
+        });
+        document.getElementById("feedback-search").addEventListener("input", renderFeedback);
+        document.getElementById("feedback-filter-category").addEventListener("change", renderFeedback);
+        document.getElementById("feedback-filter-status").addEventListener("change", renderFeedback);
         signOutButton.addEventListener("click", () => run(async () => {
             const { error } = await client.auth.signOut();
             if (error) throw error;

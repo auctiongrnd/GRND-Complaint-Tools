@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "GRND Complaint Tools",
-  "version": "1.5.2",
-  "description": "Complaint tools, synced administrator and faction leader lists, searchable report history, and release updates for GRND admins",
+  "version": "1.6.0",
+  "description": "Complaint tools with synced player directories, opt-in admin analytics, account-linked feature access, and extension updates",
 
   "content_scripts": [
     {

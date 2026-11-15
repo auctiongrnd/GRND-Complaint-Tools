@@ -28,6 +28,8 @@
     const USAGE_OPT_OUT = "grnd_usage_opt_out";
     const USAGE_INSTALL_ID = "grnd_usage_install_id";
     const USAGE_LAST_SENT = "grnd_usage_last_sent";
+    const USAGE_SHARE_ADMIN_NAME = "grnd_usage_share_admin_name";
+    const EXTENSION_ACCOUNT_SESSION = "grnd_account_session";
     const USAGE_SEND_INTERVAL = 24 * 60 * 60 * 1000;
     const SUPABASE_URL = window.GRND_CONFIG && window.GRND_CONFIG.supabaseUrl;
     const SUPABASE_ANON_KEY = window.GRND_CONFIG && window.GRND_CONFIG.supabaseAnonKey;
@@ -35,6 +37,7 @@
     let extensionReleases = [];
     let historyVisibleReports = [];
     let activeHistoryRange = "week";
+    let extensionFeatureEntitlements = {};
 
     function getExtensionStorage(keys) {
         return new Promise((resolve, reject) => {
@@ -64,6 +67,116 @@
         });
     }
 
+    function normalizeAuthSession(session) {
+        if (!session || !session.access_token || !session.refresh_token || !session.user || !session.user.id) {
+            throw new Error("The account service returned an invalid sign-in response.");
+        }
+        return {
+            access_token: session.access_token,
+            refresh_token: session.refresh_token,
+            expires_at_ms: Date.now() + Number(session.expires_in || 3600) * 1000,
+            user_id: session.user.id,
+            email: session.user.email || ""
+        };
+    }
+
+    async function getExtensionAccountSession() {
+        const stored = await getExtensionStorage(EXTENSION_ACCOUNT_SESSION);
+        const session = stored[EXTENSION_ACCOUNT_SESSION];
+        if (!session) return null;
+        if (session.access_token && Number(session.expires_at_ms) > Date.now() + 60000) return session;
+        if (!session.refresh_token) {
+            await setExtensionStorage({ [EXTENSION_ACCOUNT_SESSION]: null });
+            throw new Error("Your extension account session expired. Sign in again.");
+        }
+
+        const response = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
+            method: "POST",
+            headers: {
+                apikey: SUPABASE_ANON_KEY,
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({ refresh_token: session.refresh_token })
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            await setExtensionStorage({ [EXTENSION_ACCOUNT_SESSION]: null });
+            extensionFeatureEntitlements = {};
+            throw new Error(result.msg || result.message || "Your extension account session expired. Sign in again.");
+        }
+
+        const refreshed = normalizeAuthSession(result);
+        await setExtensionStorage({ [EXTENSION_ACCOUNT_SESSION]: refreshed });
+        return refreshed;
+    }
+
+    async function signInExtensionAccount(email, password) {
+        if (!SUPABASE_URL || !SUPABASE_ANON_KEY) throw new Error("Account sign-in is unavailable because the portal is not configured.");
+        const response = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
+            method: "POST",
+            headers: {
+                apikey: SUPABASE_ANON_KEY,
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({ email, password })
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(result.msg || result.message || result.error_description || "Could not sign in to your portal account.");
+
+        const session = normalizeAuthSession(result);
+        await setExtensionStorage({ [EXTENSION_ACCOUNT_SESSION]: session });
+        await refreshExtensionFeatureEntitlements();
+        await recordExtensionUsage(true);
+        return session;
+    }
+
+    async function signOutExtensionAccount() {
+        await setExtensionStorage({ [EXTENSION_ACCOUNT_SESSION]: null });
+        extensionFeatureEntitlements = {};
+        await recordExtensionUsage(true);
+    }
+
+    async function callExtensionRpc(name, body) {
+        const session = await getExtensionAccountSession();
+        const response = await fetch(`${SUPABASE_URL}/rest/v1/rpc/${encodeURIComponent(name)}`, {
+            method: "POST",
+            headers: {
+                apikey: SUPABASE_ANON_KEY,
+                Authorization: `Bearer ${session ? session.access_token : SUPABASE_ANON_KEY}`,
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify(body)
+        });
+        const responseText = await response.text();
+        if (!response.ok) throw new Error(`${name} failed (${response.status}): ${responseText}`);
+        return responseText ? JSON.parse(responseText) : null;
+    }
+
+    async function refreshExtensionFeatureEntitlements() {
+        const session = await getExtensionAccountSession();
+        if (!session) {
+            extensionFeatureEntitlements = {};
+            return extensionFeatureEntitlements;
+        }
+        const result = await callExtensionRpc("get_my_extension_entitlements", {});
+        if (!result || typeof result.features !== "object" || Array.isArray(result.features)) {
+            throw new Error("Feature access returned an invalid response.");
+        }
+        extensionFeatureEntitlements = Object.fromEntries(
+            Object.entries(result.features).filter(([, enabled]) => typeof enabled === "boolean")
+        );
+        return extensionFeatureEntitlements;
+    }
+
+    function hasExtensionFeature(featureKey) {
+        return extensionFeatureEntitlements[featureKey] === true;
+    }
+
+    async function isExtensionFeatureEnabled(featureKey) {
+        await refreshExtensionFeatureEntitlements();
+        return hasExtensionFeature(featureKey);
+    }
+
     function createUsageInstallId() {
         const bytes = new Uint8Array(16);
         window.crypto.getRandomValues(bytes);
@@ -73,39 +186,40 @@
         return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
     }
 
-    async function recordExtensionUsage() {
+    async function recordExtensionUsage(force = false) {
         if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return;
-        const settings = await getExtensionStorage([USAGE_OPT_OUT, USAGE_INSTALL_ID, USAGE_LAST_SENT]);
+        const settings = await getExtensionStorage([
+            USAGE_OPT_OUT,
+            USAGE_INSTALL_ID,
+            USAGE_LAST_SENT,
+            USAGE_SHARE_ADMIN_NAME
+        ]);
         if (settings[USAGE_OPT_OUT] === true) return;
 
         const now = Date.now();
-        if (now - Number(settings[USAGE_LAST_SENT] || 0) < USAGE_SEND_INTERVAL) return;
+        if (!force && now - Number(settings[USAGE_LAST_SENT] || 0) < USAGE_SEND_INTERVAL) return;
         const installId = settings[USAGE_INSTALL_ID] || createUsageInstallId();
         if (!settings[USAGE_INSTALL_ID]) {
             await setExtensionStorage({ [USAGE_INSTALL_ID]: installId });
         }
 
         const version = chrome.runtime.getManifest().version;
-        const response = await fetch(`${SUPABASE_URL}/rest/v1/rpc/record_extension_usage`, {
-            method: "POST",
-            headers: {
-                apikey: SUPABASE_ANON_KEY,
-                Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify({ p_install_id: installId, p_version: version })
+        const adminName = settings[USAGE_SHARE_ADMIN_NAME] === true ? getAdminName().trim() : "";
+        await callExtensionRpc("record_extension_usage", {
+            p_install_id: installId,
+            p_version: version,
+            p_admin_name: adminName || null
         });
-        if (!response.ok) {
-            throw new Error(`Usage report failed (${response.status}): ${await response.text()}`);
-        }
         await setExtensionStorage({ [USAGE_LAST_SENT]: now });
     }
 
     async function setUsageAnalyticsEnabled(enabled) {
-        await setExtensionStorage({
+        const settingsToSave = {
             [USAGE_OPT_OUT]: !enabled,
             [USAGE_LAST_SENT]: 0
-        });
+        };
+        if (!enabled) settingsToSave[USAGE_SHARE_ADMIN_NAME] = false;
+        await setExtensionStorage(settingsToSave);
         if (enabled) {
             await recordExtensionUsage();
             showStatus("grnd-usage-status", "Anonymous usage sharing is on.", "#16a34a");
@@ -128,6 +242,54 @@
             }
         }
         showStatus("grnd-usage-status", "Usage sharing is off; your stored install count was removed.", "#16a34a");
+    }
+
+    async function setAdminNameSharingEnabled(enabled) {
+        if (enabled && !getAdminName().trim()) {
+            throw new Error("Save your admin name in Profile before sharing it.");
+        }
+        const settings = await getExtensionStorage(USAGE_OPT_OUT);
+        if (enabled && settings[USAGE_OPT_OUT] === true) {
+            throw new Error("Turn on anonymous usage counts before sharing your admin name.");
+        }
+        await setExtensionStorage({
+            [USAGE_SHARE_ADMIN_NAME]: enabled,
+            [USAGE_LAST_SENT]: 0
+        });
+        await recordExtensionUsage(true);
+        showStatus(
+            "grnd-usage-status",
+            enabled ? "Admin name sharing is on. The owner can see your saved name." : "Admin name sharing is off.",
+            "#16a34a"
+        );
+    }
+
+    async function loadExtensionAccountSettings() {
+        const form = document.getElementById("grnd-extension-account-form");
+        const current = document.getElementById("grnd-extension-account-current");
+        const status = document.getElementById("grnd-extension-account-status");
+        status.style.color = "";
+        try {
+            const session = await getExtensionAccountSession();
+            form.hidden = Boolean(session);
+            current.hidden = !session;
+            if (!session) {
+                status.textContent = "This installation is not linked to a portal account.";
+                return;
+            }
+
+            await refreshExtensionFeatureEntitlements();
+            document.getElementById("grnd-extension-account-current-email").textContent = session.email;
+            const enabledFeatures = Object.keys(extensionFeatureEntitlements).filter(key => extensionFeatureEntitlements[key]);
+            status.textContent = enabledFeatures.length
+                ? `Account linked. ${enabledFeatures.length} account feature entitlement(s) are active.`
+                : "Account linked. No account-specific premium features are enabled yet; core tools remain available.";
+        } catch (error) {
+            form.hidden = false;
+            current.hidden = true;
+            status.textContent = `Could not load account access: ${error.message}`;
+            status.style.color = "#dc2626";
+        }
     }
 
     function getReportHistory() {
@@ -2009,6 +2171,7 @@
             <p class="grnd-settings-intro">Personalize your workspace. Preferences and templates are saved on this browser.</p>
             <nav class="grnd-settings-nav" aria-label="Jump to a settings section">
                 <button type="button" data-settings-jump="grnd-settings-admin">Profile</button>
+                <button type="button" data-settings-jump="grnd-settings-account">Account</button>
                 <button type="button" data-settings-jump="grnd-settings-sections">Sections</button>
                 <button type="button" data-settings-jump="grnd-settings-templates">Templates</button>
                 <button type="button" data-settings-jump="grnd-settings-appearance">Appearance</button>
@@ -2023,6 +2186,23 @@
                     <button id="grnd-admin-save" class="grnd-settings-action-btn grnd-btn-save">Save</button>
                 </div>
                 <div id="grnd-admin-status" class="grnd-settings-status"></div>
+            </div>
+
+            <div class="grnd-settings-divider"></div>
+
+            <div id="grnd-settings-account" class="grnd-settings-section">
+                <div class="grnd-settings-section-title">Portal account &amp; premium access</div>
+                <p class="grnd-updates-help">Sign in with your community portal account to link this installation to your account and receive account-based feature entitlements. Your password is sent to the portal sign-in service and is not saved by the extension.</p>
+                <form id="grnd-extension-account-form">
+                    <label>Email <input id="grnd-extension-account-email" type="email" autocomplete="username" required></label>
+                    <label>Password <input id="grnd-extension-account-password" type="password" autocomplete="current-password" required></label>
+                    <button id="grnd-extension-account-signin" class="grnd-settings-action-btn grnd-btn-save" type="submit">Link portal account</button>
+                </form>
+                <div id="grnd-extension-account-current" hidden>
+                    <div class="grnd-account-summary">Linked account: <strong id="grnd-extension-account-current-email"></strong></div>
+                    <button id="grnd-extension-account-signout" class="grnd-settings-action-btn grnd-btn-upload" type="button">Unlink account</button>
+                </div>
+                <div id="grnd-extension-account-status" class="grnd-settings-status" role="status"></div>
             </div>
 
             <div class="grnd-settings-divider"></div>
@@ -2115,7 +2295,12 @@
                     <input type="checkbox" id="grnd-usage-enabled" checked>
                     Share anonymous usage counts
                 </label>
-                <p class="grnd-updates-help">When enabled, the extension sends a random installation ID and version at most once a day. It does not send report history, admin name, or complaint content. You can turn this off any time; your stored install count will be deleted.</p>
+                <p class="grnd-updates-help">When enabled, the extension sends a random installation ID and version at most once a day. Report history and complaint contents are never sent. You can turn this off any time to delete your stored usage record.</p>
+                <label class="grnd-analytics-label">
+                    <input type="checkbox" id="grnd-share-admin-name">
+                    Share my saved admin name with the extension owner
+                </label>
+                <p class="grnd-updates-help">This is separate, optional consent. If enabled, your saved admin name is sent with usage reports so the owner can see which admins use the extension. It is not shared with other users and is removed when you turn this off or disable analytics.</p>
                 <div id="grnd-usage-status" class="grnd-settings-status" role="status"></div>
             </div>
         </section>`;
@@ -2146,7 +2331,49 @@
                 localStorage.removeItem(LS_ADMIN);
                 showStatus("grnd-admin-status", "Cleared admin name.", "#d97706");
             }
+            getExtensionStorage(USAGE_SHARE_ADMIN_NAME).then(settings => {
+                if (settings[USAGE_SHARE_ADMIN_NAME] === true) {
+                    return recordExtensionUsage(true);
+                }
+            }).catch(error => {
+                console.error("Could not update the opted-in admin name report:", error);
+                showStatus("grnd-usage-status", error.message, "#dc2626");
+            });
         });
+
+        const accountForm = document.getElementById("grnd-extension-account-form");
+        accountForm.addEventListener("submit", async event => {
+            event.preventDefault();
+            const submit = document.getElementById("grnd-extension-account-signin");
+            const email = document.getElementById("grnd-extension-account-email").value.trim();
+            const passwordInput = document.getElementById("grnd-extension-account-password");
+            submit.disabled = true;
+            document.getElementById("grnd-extension-account-status").textContent = "Linking account…";
+            try {
+                await signInExtensionAccount(email, passwordInput.value);
+                passwordInput.value = "";
+                await loadExtensionAccountSettings();
+            } catch (error) {
+                document.getElementById("grnd-extension-account-status").textContent = error.message;
+                document.getElementById("grnd-extension-account-status").style.color = "#dc2626";
+            } finally {
+                submit.disabled = false;
+            }
+        });
+        document.getElementById("grnd-extension-account-signout").addEventListener("click", async () => {
+            const button = document.getElementById("grnd-extension-account-signout");
+            button.disabled = true;
+            try {
+                await signOutExtensionAccount();
+                await loadExtensionAccountSettings();
+                showStatus("grnd-extension-account-status", "Portal account unlinked.", "#16a34a");
+            } catch (error) {
+                showStatus("grnd-extension-account-status", error.message, "#dc2626");
+            } finally {
+                button.disabled = false;
+            }
+        });
+        loadExtensionAccountSettings();
 
         document.getElementById("gcf-colour-picker").addEventListener("input", e => {
             document.getElementById("gcf-colour").value = e.target.value;
@@ -2162,22 +2389,47 @@
         themeToggle.checked = document.documentElement.dataset.grndTheme === "dark";
         themeToggle.addEventListener("change", () => applyTheme(themeToggle.checked, true));
         const usageToggle = document.getElementById("grnd-usage-enabled");
+        const adminNameToggle = document.getElementById("grnd-share-admin-name");
         getExtensionStorage(USAGE_OPT_OUT).then(settings => {
             usageToggle.checked = settings[USAGE_OPT_OUT] !== true;
+            adminNameToggle.disabled = settings[USAGE_OPT_OUT] === true;
         }).catch(error => {
             usageToggle.checked = false;
             usageToggle.disabled = true;
+            adminNameToggle.disabled = true;
+            showStatus("grnd-usage-status", error.message, "#dc2626");
+        });
+        getExtensionStorage(USAGE_SHARE_ADMIN_NAME).then(settings => {
+            adminNameToggle.checked = settings[USAGE_SHARE_ADMIN_NAME] === true;
+        }).catch(error => {
+            adminNameToggle.checked = false;
+            adminNameToggle.disabled = true;
             showStatus("grnd-usage-status", error.message, "#dc2626");
         });
         usageToggle.addEventListener("change", async () => {
             usageToggle.disabled = true;
             try {
                 await setUsageAnalyticsEnabled(usageToggle.checked);
+                if (!usageToggle.checked) adminNameToggle.checked = false;
+                adminNameToggle.disabled = !usageToggle.checked;
             } catch (error) {
                 console.error("Could not update anonymous usage preference:", error);
                 showStatus("grnd-usage-status", error.message, "#dc2626");
+                usageToggle.checked = !usageToggle.checked;
             } finally {
                 usageToggle.disabled = false;
+            }
+        });
+        adminNameToggle.addEventListener("change", async () => {
+            adminNameToggle.disabled = true;
+            try {
+                await setAdminNameSharingEnabled(adminNameToggle.checked);
+            } catch (error) {
+                adminNameToggle.checked = !adminNameToggle.checked;
+                showStatus("grnd-usage-status", error.message, "#dc2626");
+            } finally {
+                const settings = await getExtensionStorage(USAGE_OPT_OUT).catch(() => ({ [USAGE_OPT_OUT]: true }));
+                adminNameToggle.disabled = settings[USAGE_OPT_OUT] === true;
             }
         });
 
@@ -2495,6 +2747,13 @@
             .grnd-settings-row { display: flex; align-items: center; gap: 8px; }
             .grnd-settings-status { min-height: 16px; margin-top: 6px; font-size: 12px; }
             .grnd-settings-intro { margin: 0 0 8px; color: #64748b; font-size: 13px; }
+            #grnd-extension-account-form { display: grid; gap: 10px; max-width: 520px; }
+            #grnd-extension-account-form label { display: grid; gap: 5px; color: #475569; font-size: 12px; font-weight: 700; }
+            #grnd-extension-account-form input { width: 100%; padding: 8px 10px; border: 1px solid #cbd5e1; border-radius: 6px; background: #fff; color: #1e293b; font-size: 13px; }
+            .grnd-account-summary { margin: 8px 0 12px; color: #475569; font-size: 13px; overflow-wrap: anywhere; }
+            [data-grnd-theme="dark"] #grnd-extension-account-form label,
+            [data-grnd-theme="dark"] .grnd-account-summary { color: #cbd5e1; }
+            [data-grnd-theme="dark"] #grnd-extension-account-form input { background: #0f1a2b; color: #e2e8f0; border-color: #334766; }
             .grnd-settings-nav { display: flex; gap: 7px; overflow-x: auto; padding: 8px 0 14px; margin-bottom: 4px; }
             .grnd-settings-nav button { flex: 0 0 auto; padding: 7px 11px; border: 1px solid #cbd5e1; border-radius: 999px; background: #f8fafc; color: #475569; font-size: 12px; font-weight: 700; cursor: pointer; }
             .grnd-settings-nav button:hover { border-color: #60a5fa; color: #1d4ed8; }
